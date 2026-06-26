@@ -1,0 +1,49 @@
+# ─────────────────────────────────────────────────────────────
+# SuperClerk Backend — .gitignore
+# ─────────────────────────────────────────────────────────────
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+
+# Alembic generated (versions tracked, but not compiled)
+alembic/__pycache__/
+alembic/versions/__pycache__/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test cache
+.pytest_cache/
+.coverage
+htmlcov/

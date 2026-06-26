@@ -1,0 +1,31 @@
+# ─────────────────────────────────────────────────────────────
+# SuperClerk Backend — Requirements
+# Phase 3: Infrastructure only (no AI yet)
+# ─────────────────────────────────────────────────────────────
+
+# HTTP server
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# Database — Async SQLAlchemy + PostgreSQL
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.12  # Alembic migrations (sync driver)
+greenlet==3.1.1
+
+# Migrations
+alembic==1.14.0
+
+# Config
+pydantic-settings==2.6.1
+python-dotenv==1.0.1
+
+# Async HTTP client (Gmail API calls in later phases)
+httpx==0.28.1
+
+# Security — token validation for internal Next.js → FastAPI calls
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Utilities
+python-multipart==0.0.20
