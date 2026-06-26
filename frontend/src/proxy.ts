@@ -1,8 +1,7 @@
 // ─────────────────────────────────────────────────────────────
-// SuperClerk — Middleware
+// SuperClerk — Proxy (Next.js 16+ replacement for middleware)
 // Protects all /dashboard routes — redirects to / if unauthenticated.
-// /dashboard/onboarding is accessible with just a NextAuth session
-// (no backend JWT needed — the sync happens on that page mount).
+// /dashboard/onboarding is accessible with just a NextAuth session.
 // ─────────────────────────────────────────────────────────────
 
 import { auth } from "@/auth";
@@ -14,7 +13,6 @@ export default auth((req: NextRequest & { auth: unknown }) => {
   const { pathname } = req.nextUrl;
 
   const isOnDashboard = pathname.startsWith("/dashboard");
-  const isOnOnboarding = pathname.startsWith("/dashboard/onboarding");
 
   // If hitting any dashboard route without a session → sign-in page
   if (isOnDashboard && !isLoggedIn) {
@@ -26,17 +24,14 @@ export default auth((req: NextRequest & { auth: unknown }) => {
     return NextResponse.redirect(new URL("/dashboard", req.nextUrl));
   }
 
-  // Allow onboarding to pass through (session already verified above)
-  if (isOnOnboarding) {
-    return NextResponse.next();
-  }
-
   return NextResponse.next();
 });
 
 export const config = {
   matcher: [
-    // Match all routes except static files and Next.js internals
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    // Protect dashboard routes and the landing page only.
+    // Explicitly exclude /api/auth/* so NextAuth handlers are never intercepted.
+    "/dashboard/:path*",
+    "/",
   ],
 };
