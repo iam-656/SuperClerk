@@ -38,7 +38,7 @@ export default async function RootLayout({
   const session = await auth();
 
   return (
-    <html lang="en" className={`${inter.variable} h-full`}>
+    <html lang="en" className={`${inter.variable} h-full`} suppressHydrationWarning data-scroll-behavior="smooth">
       <body className="h-full antialiased">
         <SessionProvider session={session}>{children}</SessionProvider>
       </body>
