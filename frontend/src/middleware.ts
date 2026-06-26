@@ -1,6 +1,8 @@
 // ─────────────────────────────────────────────────────────────
 // SuperClerk — Middleware
-// Protects all /dashboard routes — redirects to / if unauthenticated
+// Protects all /dashboard routes — redirects to / if unauthenticated.
+// /dashboard/onboarding is accessible with just a NextAuth session
+// (no backend JWT needed — the sync happens on that page mount).
 // ─────────────────────────────────────────────────────────────
 
 import { auth } from "@/auth";
@@ -9,14 +11,24 @@ import type { NextRequest } from "next/server";
 
 export default auth((req: NextRequest & { auth: unknown }) => {
   const isLoggedIn = !!req.auth;
-  const isOnDashboard = req.nextUrl.pathname.startsWith("/dashboard");
+  const { pathname } = req.nextUrl;
 
+  const isOnDashboard = pathname.startsWith("/dashboard");
+  const isOnOnboarding = pathname.startsWith("/dashboard/onboarding");
+
+  // If hitting any dashboard route without a session → sign-in page
   if (isOnDashboard && !isLoggedIn) {
     return NextResponse.redirect(new URL("/", req.nextUrl));
   }
 
-  if (req.nextUrl.pathname === "/" && isLoggedIn) {
+  // Authenticated user on the landing page → dashboard
+  if (pathname === "/" && isLoggedIn) {
     return NextResponse.redirect(new URL("/dashboard", req.nextUrl));
+  }
+
+  // Allow onboarding to pass through (session already verified above)
+  if (isOnOnboarding) {
+    return NextResponse.next();
   }
 
   return NextResponse.next();

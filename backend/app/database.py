@@ -1,12 +1,18 @@
 # ─────────────────────────────────────────────────────────────
 # SuperClerk Backend — Async Database Engine
 # SQLAlchemy 2.0 async engine using asyncpg driver.
-# Provides AsyncSession factory + FastAPI dependency.
+#
+# Connection strategy:
+#   Runtime  → Supabase SESSION pooler (port 5432) — supports
+#              asyncpg prepared statements / extended query protocol.
+#   Alembic  → Supabase TRANSACTION pooler (port 6543) via psycopg2
+#              (configured in alembic/env.py via ALEMBIC_DATABASE_URL).
 # ─────────────────────────────────────────────────────────────
 
 import logging
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -17,17 +23,17 @@ from sqlalchemy.orm import DeclarativeBase
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
-
 settings = get_settings()
 
 
 # ─── SQLAlchemy Engine ──────────────────────────────────────
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.is_development,  # Log SQL in dev only
-    pool_pre_ping=True,             # Verify connections before use
-    pool_size=10,
-    max_overflow=20,
+    echo=False,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10,
+    connect_args={"statement_cache_size": 0},  # Safety: disable PS cache
 )
 
 # ─── Session Factory ────────────────────────────────────────
@@ -67,7 +73,6 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def check_db_connection() -> bool:
     """Ping the database — used by the health endpoint."""
     try:
-        from sqlalchemy import text
         async with AsyncSessionLocal() as session:
             await session.execute(text("SELECT 1"))
         return True

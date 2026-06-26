@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.v1.health import router as health_router
+from app.api.v1.auth import router as auth_router
 from app.config import get_settings
 from app.database import check_db_connection
 
@@ -94,6 +95,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # ─── Routers ────────────────────────────────────────────────
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
 
 
 # ─── Root Redirect ──────────────────────────────────────────
