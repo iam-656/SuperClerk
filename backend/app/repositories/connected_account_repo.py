@@ -30,6 +30,25 @@ class ConnectedAccountRepository(BaseRepository[ConnectedAccount]):
         result = await self.session.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def get_all_google_accounts(self) -> list[ConnectedAccount]:
+        """Return all Google connected accounts — used by the 15-min scheduler."""
+        stmt = select(ConnectedAccount).where(
+            ConnectedAccount.provider == "google"
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def update_history_id(
+        self,
+        account_id: uuid.UUID,
+        history_id: str,
+    ) -> None:
+        """Persist the latest Gmail historyId after a successful sync."""
+        account = await self.get_by_id(account_id)
+        if account:
+            account.last_history_id = history_id
+            await self.session.flush()
+
     async def upsert_google_tokens(
         self,
         user_id: uuid.UUID,

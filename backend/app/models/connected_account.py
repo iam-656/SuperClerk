@@ -58,6 +58,13 @@ class ConnectedAccount(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # ─── Gmail Sync Cursor ───────────────────────────────────
+    last_history_id: Mapped[str | None] = mapped_column(
+        String(50),
+        nullable=True,
+        comment="Gmail historyId from the last incremental sync. Used to fetch only new changes.",
+    )
+
     # ─── Timestamps ─────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

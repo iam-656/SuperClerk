@@ -51,3 +51,22 @@ class EmailRepository(BaseRepository[Email]):
     async def mark_as_processed(self, email_id: uuid.UUID) -> Email | None:
         """Mark an email as processed by the AI agent."""
         return await self.update(email_id, {"is_processed": True})
+
+    async def bulk_upsert_emails(
+        self, user_id: uuid.UUID, emails_data: list[dict]
+    ) -> tuple[int, int]:
+        """
+        Insert multiple emails, skipping any that already exist by gmail_id.
+        Returns (inserted_count, skipped_count).
+        """
+        inserted = 0
+        skipped = 0
+        for data in emails_data:
+            existing = await self.get_by_gmail_id(data["gmail_id"])
+            if existing:
+                skipped += 1
+                continue
+            await self.create({**data, "user_id": user_id})
+            inserted += 1
+        return inserted, skipped
+
