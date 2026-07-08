@@ -40,7 +40,7 @@ async def get_gmail_credentials(
     """
     Reconstruct Google OAuth2 Credentials from the DB.
     Automatically refreshes the access_token if expired and saves it back.
-    Returns None if no Google account is connected.
+    Returns None if no Google account is connected or credentials are unusable.
     """
     ca_repo = ConnectedAccountRepository(session)
     account = await ca_repo.get_by_user_and_provider(user_id, "google")
@@ -51,12 +51,23 @@ async def get_gmail_credentials(
 
     creds = Credentials(
         token=account.access_token,
-        refresh_token=account.refresh_token,
+        refresh_token=account.refresh_token or None,
         token_uri="https://oauth2.googleapis.com/token",
         client_id=settings.google_client_id,
         client_secret=settings.google_client_secret,
         scopes=account.scopes or GMAIL_SCOPES,
     )
+
+    # If token is expired and we have no refresh_token, we can't do anything.
+    # This happens when the user signed in before refresh_token was saved to DB.
+    # The user must sign out and sign back in to get a fresh refresh_token.
+    if creds.expired and not creds.refresh_token:
+        logger.warning(
+            "Access token expired and no refresh_token stored for user_id=%s. "
+            "User must sign out and sign back in.",
+            user_id,
+        )
+        return None
 
     # Auto-refresh if expired
     if creds.expired and creds.refresh_token:
