@@ -98,6 +98,11 @@ async def sync_emails(
     """
     logger.info("Manual sync triggered by user_id=%s", user_id)
     result = await incremental_sync(db, user_id)
+    if "error" in result:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=result["error"],
+        )
     return {"status": "ok", **result}
 
 

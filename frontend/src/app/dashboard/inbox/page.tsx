@@ -110,7 +110,19 @@ export default function InboxPage() {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          // Try to parse a meaningful error from the backend
+          let detail = `Sync failed (HTTP ${res.status})`;
+          try {
+            const errBody = await res.json();
+            if (errBody.detail === "No Google credentials") {
+              detail = "Gmail not connected. Please sign out and sign back in with Google.";
+            } else if (errBody.detail) {
+              detail = errBody.detail;
+            }
+          } catch { /* ignore JSON parse errors */ }
+          throw new Error(detail);
+        }
         const result = await res.json();
         setSyncResult(result);
         setLastSynced(new Date());

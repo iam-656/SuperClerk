@@ -7,6 +7,7 @@
 #   - Gmail Watch: subscribes inbox to Pub/Sub topic
 # ─────────────────────────────────────────────────────────────
 
+import asyncio
 import base64
 import email as email_lib
 import logging
@@ -60,7 +61,7 @@ async def get_gmail_credentials(
     # Auto-refresh if expired
     if creds.expired and creds.refresh_token:
         try:
-            creds.refresh(Request())
+            await asyncio.to_thread(creds.refresh, Request())
             # Save refreshed token back to DB
             await ca_repo.upsert_google_tokens(
                 user_id=user_id,
@@ -163,19 +164,23 @@ async def initial_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
 
     logger.info("Initial sync: user=%s query='%s'", user_id, query)
 
-    # List messages
-    response = gmail.users().messages().list(
-        userId="me", q=query, maxResults=100
-    ).execute()
+    # List messages (blocking I/O → run in thread)
+    response = await asyncio.to_thread(
+        lambda: gmail.users().messages().list(
+            userId="me", q=query, maxResults=100
+        ).execute()
+    )
 
     message_refs = response.get("messages", [])
     emails_data = []
 
     for ref in message_refs:
         try:
-            msg = gmail.users().messages().get(
-                userId="me", id=ref["id"], format="full"
-            ).execute()
+            msg = await asyncio.to_thread(
+                lambda r=ref: gmail.users().messages().get(
+                    userId="me", id=r["id"], format="full"
+                ).execute()
+            )
             parsed = _parse_message(msg)
             if parsed:
                 emails_data.append(parsed)
@@ -188,7 +193,9 @@ async def initial_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
     await session.commit()
 
     # Save historyId for incremental sync
-    profile = gmail.users().getProfile(userId="me").execute()
+    profile = await asyncio.to_thread(
+        lambda: gmail.users().getProfile(userId="me").execute()
+    )
     history_id = str(profile.get("historyId", ""))
     if history_id:
         ca_repo = ConnectedAccountRepository(session)
@@ -234,11 +241,13 @@ async def incremental_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
     )
 
     try:
-        history_resp = gmail.users().history().list(
-            userId="me",
-            startHistoryId=account.last_history_id,
-            historyTypes=["messageAdded"],
-        ).execute()
+        history_resp = await asyncio.to_thread(
+            lambda: gmail.users().history().list(
+                userId="me",
+                startHistoryId=account.last_history_id,
+                historyTypes=["messageAdded"],
+            ).execute()
+        )
     except Exception as exc:
         # historyId expired (> 7 days old) — fall back to initial sync
         logger.warning("historyId expired for user=%s: %s — falling back to initial sync", user_id, exc)
@@ -257,9 +266,11 @@ async def incremental_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
     emails_data = []
     for msg_id in message_ids:
         try:
-            msg = gmail.users().messages().get(
-                userId="me", id=msg_id, format="full"
-            ).execute()
+            msg = await asyncio.to_thread(
+                lambda m=msg_id: gmail.users().messages().get(
+                    userId="me", id=m, format="full"
+                ).execute()
+            )
             parsed = _parse_message(msg)
             if parsed:
                 emails_data.append(parsed)
@@ -297,13 +308,15 @@ async def start_gmail_watch(gmail, user_id: uuid.UUID) -> None:
         logger.warning("GOOGLE_PUBSUB_TOPIC not set — skipping Gmail watch")
         return
     try:
-        watch_resp = gmail.users().watch(
-            userId="me",
-            body={
-                "topicName": settings.google_pubsub_topic,
-                "labelIds": ["INBOX"],
-            },
-        ).execute()
+        watch_resp = await asyncio.to_thread(
+            lambda: gmail.users().watch(
+                userId="me",
+                body={
+                    "topicName": settings.google_pubsub_topic,
+                    "labelIds": ["INBOX"],
+                },
+            ).execute()
+        )
         logger.info(
             "Gmail watch started: user=%s expiration=%s historyId=%s",
             user_id,

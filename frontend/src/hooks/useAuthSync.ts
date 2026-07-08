@@ -37,7 +37,11 @@ export function useAuthSync() {
     hasSynced.current = true;
     setSyncState("syncing");
 
-    const { user } = session;
+    const sess = session as {
+      accessToken?: string;
+      refreshToken?: string;
+      accessTokenExpires?: number;
+    } & typeof session;
 
     fetch(`${BACKEND_URL}/api/v1/auth/sync`, {
       method: "POST",
@@ -46,12 +50,20 @@ export function useAuthSync() {
         "X-Agent-Secret": AGENT_SECRET,
       },
       body: JSON.stringify({
-        google_id: user.id,          // NextAuth exposes sub as user.id
+        google_id: user.id,
         email: user.email,
         name: user.name,
         avatar_url: user.image ?? null,
-        // accessToken is attached to session via auth.ts callbacks
-        access_token: (session as { accessToken?: string }).accessToken ?? null,
+        // Gmail OAuth tokens — stored in backend for Gmail API access
+        access_token: sess.accessToken ?? null,
+        refresh_token: sess.refreshToken ?? null,
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.send",
+        ],
+        token_expires_at: sess.accessTokenExpires
+          ? new Date(sess.accessTokenExpires * 1000).toISOString()
+          : null,
       }),
     })
       .then((res) => {

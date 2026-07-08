@@ -106,11 +106,16 @@ async def log_requests(request: Request, call_next):
 # ─── Global Exception Handler ───────────────────────────────
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Catch any unhandled exception and return a clean JSON error."""
+    """Catch any unhandled exception and return a clean JSON error with CORS headers."""
     logger.error("Unhandled exception on %s: %s", request.url.path, exc, exc_info=True)
+    origin = request.headers.get("origin", "")
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"error": "Internal server error", "detail": str(exc)},
+        headers={
+            "Access-Control-Allow-Origin": origin or settings.frontend_url,
+            "Access-Control-Allow-Credentials": "true",
+        },
     )
 
 

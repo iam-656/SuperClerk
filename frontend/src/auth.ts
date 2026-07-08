@@ -37,12 +37,20 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (account) {
         token.accessToken = account.access_token;
         token.refreshToken = account.refresh_token;
+        token.accessTokenExpires = account.expires_at; // unix seconds
+        token.googleId = account.providerAccountId; // Google sub claim
       }
       return token;
     },
     async session({ session, token }) {
-      // Expose tokens to server-side API calls
+      // Expose tokens and Google ID to client-side hooks
       session.accessToken = token.accessToken as string | undefined;
+      session.refreshToken = token.refreshToken as string | undefined;
+      session.accessTokenExpires = token.accessTokenExpires as number | undefined;
+      // Map Google sub → session.user.id so useAuthSync can send it as google_id
+      if (token.sub) {
+        session.user.id = token.sub;
+      }
       return session;
     },
   },
