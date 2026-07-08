@@ -42,6 +42,7 @@ export function useAuthSync() {
       refreshToken?: string;
       accessTokenExpires?: number;
     } & typeof session;
+    const { user } = session;
 
     fetch(`${BACKEND_URL}/api/v1/auth/sync`, {
       method: "POST",
