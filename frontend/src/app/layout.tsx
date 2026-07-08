@@ -39,7 +39,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en" className={`${inter.variable} h-full`} suppressHydrationWarning data-scroll-behavior="smooth">
-      <body className="h-full antialiased">
+      <body className="h-full antialiased" suppressHydrationWarning>
         <SessionProvider session={session}>{children}</SessionProvider>
       </body>
     </html>
