@@ -174,7 +174,12 @@ export function Sidebar() {
         </div>
         <button
           id="btn-sign-out"
-          onClick={() => signOut({ callbackUrl: "/" })}
+          onClick={() => {
+            // Clear the backend JWT so useAuthSync re-runs on next sign-in
+            // (this ensures fresh OAuth tokens including refresh_token are saved)
+            sessionStorage.removeItem("sc_access_token");
+            signOut({ callbackUrl: "/" });
+          }}
           className="btn btn-secondary w-full text-sm py-1.5"
           aria-label="Sign out"
         >

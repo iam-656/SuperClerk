@@ -61,15 +61,22 @@ async def list_emails(
     Returns a paginated list of emails for the authenticated user.
     Sorted by received_at descending (newest first).
     """
-    repo = EmailRepository(db)
-    offset = (page - 1) * page_size
-    emails = await repo.get_by_user(
-        user_id,
-        unread_only=unread_only,
-        offset=offset,
-        limit=page_size,
-    )
-    total = await repo.count()
+    try:
+        repo = EmailRepository(db)
+        offset = (page - 1) * page_size
+        emails = await repo.get_by_user(
+            user_id,
+            unread_only=unread_only,
+            offset=offset,
+            limit=page_size,
+        )
+        total = await repo.count()
+    except Exception as exc:
+        logger.error("Failed to list emails for user_id=%s: %s", user_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load emails. Please try again.",
+        )
 
     return PaginatedResponse(
         items=[EmailRead.model_validate(e) for e in emails],
@@ -95,13 +102,31 @@ async def sync_emails(
     Triggers an incremental Gmail sync for the authenticated user.
     If no historyId exists yet, runs an initial 3-day sync instead.
     This is the endpoint called by the frontend 'Refresh' button.
+    ALL exceptions are caught and converted to HTTPException so that
+    FastAPI's ExceptionMiddleware (which is inside CORSMiddleware)
+    handles them — guaranteeing CORS headers on every response.
     """
     logger.info("Manual sync triggered by user_id=%s", user_id)
-    result = await incremental_sync(db, user_id)
+    try:
+        result = await incremental_sync(db, user_id)
+    except Exception as exc:
+        logger.error("Sync endpoint error for user_id=%s: %s", user_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Gmail sync failed. Please try again.",
+        )
+
     if "error" in result:
+        detail = result["error"]
+        # Provide an actionable message for missing credentials
+        if "No Google credentials" in detail:
+            detail = (
+                "Gmail not connected — no refresh token stored. "
+                "Please sign out and sign back in with Google."
+            )
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=result["error"],
+            detail=detail,
         )
     return {"status": "ok", **result}
 
@@ -123,5 +148,17 @@ async def initial_sync_endpoint(
     Called once after a user first connects their Gmail account.
     """
     logger.info("Initial sync triggered by user_id=%s", user_id)
-    result = await initial_sync(db, user_id)
+    try:
+        result = await initial_sync(db, user_id)
+    except Exception as exc:
+        logger.error("Initial sync error for user_id=%s: %s", user_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Initial Gmail sync failed. Please try again.",
+        )
+    if "error" in result:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=result["error"],
+        )
     return {"status": "ok", **result}

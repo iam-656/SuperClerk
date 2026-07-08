@@ -37,6 +37,10 @@ engine = create_async_engine(
     pool_pre_ping=False,
     pool_size=5,
     max_overflow=10,
+    # Recycle connections every 30 min to prevent Supabase idle-connection drops
+    # (asyncpg.exceptions.ConnectionDoesNotExistError)
+    pool_recycle=1800,
+    pool_timeout=30,
     connect_args={"statement_cache_size": 0},  # Safety: disable PS cache for pgbouncer
 )
 
