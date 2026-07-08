@@ -30,10 +30,14 @@ settings = get_settings()
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    pool_pre_ping=True,
+    # pool_pre_ping is intentionally disabled — asyncpg's ping() is async but
+    # SQLAlchemy calls it synchronously in some contexts (e.g. APScheduler threads),
+    # causing MissingGreenlet errors that crash the scheduler and API endpoints.
+    # Supabase SESSION mode pooler maintains stable connections, so pre-ping is unnecessary.
+    pool_pre_ping=False,
     pool_size=5,
     max_overflow=10,
-    connect_args={"statement_cache_size": 0},  # Safety: disable PS cache
+    connect_args={"statement_cache_size": 0},  # Safety: disable PS cache for pgbouncer
 )
 
 # ─── Session Factory ────────────────────────────────────────

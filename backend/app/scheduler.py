@@ -24,37 +24,44 @@ async def _run_all_incremental_syncs() -> None:
     """
     Job that runs every N minutes.
     Fetches all Google-connected users and runs incremental_sync for each.
+    Each user gets its own session to avoid session state leakage.
     """
     from app.repositories.connected_account_repo import ConnectedAccountRepository
     from app.services.gmail_service import incremental_sync
 
     logger.info("⏰ Scheduler: running 15-min Gmail sync for all users")
 
+    # First pass: collect user_ids using a short-lived session
+    user_ids: list = []
     async with AsyncSessionLocal() as session:
         try:
             ca_repo = ConnectedAccountRepository(session)
             accounts = await ca_repo.get_all_google_accounts()
-
-            if not accounts:
-                logger.info("Scheduler: no Google accounts found — nothing to sync")
-                return
-
-            for account in accounts:
-                try:
-                    result = await incremental_sync(session, account.user_id)
-                    logger.info(
-                        "Scheduler sync: user_id=%s result=%s",
-                        account.user_id, result,
-                    )
-                except Exception as exc:
-                    await session.rollback()
-                    logger.error(
-                        "Scheduler sync failed for user_id=%s: %s",
-                        account.user_id, exc,
-                    )
-
+            user_ids = [account.user_id for account in accounts]
         except Exception as exc:
-            logger.error("Scheduler job error: %s", exc, exc_info=True)
+            logger.error("Scheduler: failed to fetch accounts: %s", exc, exc_info=True)
+            return
+
+    if not user_ids:
+        logger.info("Scheduler: no Google accounts found — nothing to sync")
+        return
+
+    # Second pass: sync each user with an isolated session
+    for user_id in user_ids:
+        async with AsyncSessionLocal() as session:
+            try:
+                result = await incremental_sync(session, user_id)
+                await session.commit()
+                logger.info(
+                    "Scheduler sync: user_id=%s result=%s",
+                    user_id, result,
+                )
+            except Exception as exc:
+                await session.rollback()
+                logger.error(
+                    "Scheduler sync failed for user_id=%s: %s",
+                    user_id, exc,
+                )
 
 
 def start_scheduler() -> None:
