@@ -44,48 +44,58 @@ export function useAuthSync() {
     } & typeof session;
     const { user } = session;
 
-    fetch(`${BACKEND_URL}/api/v1/auth/sync`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Agent-Secret": AGENT_SECRET,
-      },
-      body: JSON.stringify({
-        google_id: user.id,
-        email: user.email,
-        name: user.name,
-        avatar_url: user.image ?? null,
-        // Gmail OAuth tokens — stored in backend for Gmail API access
-        access_token: sess.accessToken ?? null,
-        refresh_token: sess.refreshToken ?? null,
-        scopes: [
-          "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/gmail.send",
-        ],
-        token_expires_at: sess.accessTokenExpires
-          ? new Date(sess.accessTokenExpires * 1000).toISOString()
-          : null,
-      }),
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error(`Sync failed: ${res.status}`);
-        return res.json();
-      })
-      .then((data: { access_token: string; is_new_user: boolean }) => {
-        // Store JWT for subsequent API calls
-        sessionStorage.setItem(TOKEN_KEY, data.access_token);
-        setSyncState("synced");
-
-        // First-time users → onboarding, returning users → dashboard
-        if (data.is_new_user) {
-          router.push("/dashboard/onboarding");
-        }
-      })
-      .catch((err) => {
-        console.error("[useAuthSync] Backend sync error:", err);
+    const doSync = async () => {
+      let res: Response;
+      try {
+        res = await fetch(`${BACKEND_URL}/api/v1/auth/sync`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Agent-Secret": AGENT_SECRET,
+          },
+          body: JSON.stringify({
+            google_id: user.id,
+            email: user.email,
+            name: user.name,
+            avatar_url: user.image ?? null,
+            access_token: sess.accessToken ?? null,
+            refresh_token: sess.refreshToken ?? null,
+            scopes: [
+              "https://www.googleapis.com/auth/gmail.readonly",
+              "https://www.googleapis.com/auth/gmail.send",
+            ],
+            token_expires_at: sess.accessTokenExpires
+              ? new Date(sess.accessTokenExpires * 1000).toISOString()
+              : null,
+          }),
+        });
+      } catch (networkErr) {
+        console.error("[useAuthSync] Network error — is the backend running?", networkErr);
         setSyncState("error");
-        // Non-fatal — user stays on dashboard even if sync fails
-      });
+        hasSynced.current = false; // allow retry on next render
+        return;
+      }
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error(`[useAuthSync] Sync failed: HTTP ${res.status}`, body);
+        setSyncState("error");
+        hasSynced.current = false; // allow retry
+        return;
+      }
+
+      const data: { access_token: string; is_new_user: boolean } = await res.json();
+      // Store JWT for subsequent API calls
+      sessionStorage.setItem(TOKEN_KEY, data.access_token);
+      setSyncState("synced");
+
+      // First-time users → onboarding, returning users → stay on dashboard
+      if (data.is_new_user) {
+        router.push("/dashboard/onboarding");
+      }
+    };
+
+    doSync();
   }, [session, status, router]);
 
   return syncState;
