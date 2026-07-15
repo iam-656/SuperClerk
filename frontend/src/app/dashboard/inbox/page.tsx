@@ -24,6 +24,8 @@ interface Email {
   sender: string;
   sender_name: string | null;
   subject: string;
+  body_text: string | null;
+  body_html: string | null;
   snippet: string | null;
   is_read: boolean;
   labels: string[] | null;
@@ -407,12 +409,19 @@ export default function InboxPage() {
             </div>
 
             <div className="flex-1 overflow-y-auto px-8 py-6">
-              <p
-                className="text-sm leading-relaxed whitespace-pre-wrap"
-                style={{ color: "var(--color-text)" }}
-              >
-                {selectedEmail.snippet ?? "No preview available."}
-              </p>
+              {selectedEmail.body_html ? (
+                <div
+                  className="prose prose-sm max-w-none"
+                  dangerouslySetInnerHTML={{ __html: selectedEmail.body_html }}
+                />
+              ) : (
+                <p
+                  className="text-sm leading-relaxed whitespace-pre-wrap"
+                  style={{ color: "var(--color-text)" }}
+                >
+                  {selectedEmail.body_text ?? selectedEmail.snippet ?? "No preview available."}
+                </p>
+              )}
             </div>
           </div>
         ) : (

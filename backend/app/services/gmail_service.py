@@ -10,6 +10,7 @@
 import asyncio
 import base64
 import email as email_lib
+import html
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -143,10 +144,10 @@ def _parse_message(msg: dict) -> dict | None:
             "sender": sender_email,
             "sender_name": sender_name,
             "recipient": recipient,
-            "subject": subject,
+            "subject": html.unescape(subject),
             "body_text": body_text,
             "body_html": body_html,
-            "snippet": snippet[:500] if snippet else None,
+            "snippet": html.unescape(snippet[:500]) if snippet else None,
             "labels": labels,
             "is_read": "UNREAD" not in labels,
             "received_at": received_at,

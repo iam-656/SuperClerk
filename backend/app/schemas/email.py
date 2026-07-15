@@ -17,6 +17,8 @@ class EmailRead(BaseModel):
     sender: str
     sender_name: str | None
     subject: str
+    body_text: str | None
+    body_html: str | None
     snippet: str | None
     is_read: bool
     is_processed: bool
