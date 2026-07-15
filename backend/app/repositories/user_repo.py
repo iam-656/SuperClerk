@@ -33,17 +33,31 @@ class UserRepository(BaseRepository[User]):
         avatar_url: str | None,
     ) -> User:
         """
-        Create a new user from Google OAuth data, or update their
-        name and avatar if they already exist. Returns the user.
+        Find an existing user by google_id OR email, then update their profile.
+        If no user exists, create one.
+
+        We look up by email as a fallback because the google_id sent by the
+        frontend may be a NextAuth-generated UUID (not the stable Google sub),
+        which changes between sessions. Email is the stable, unique identifier.
         """
+        # Primary lookup: by google_id (stable if frontend sends real Google sub)
         existing = await self.get_by_google_id(google_id)
+
+        # Fallback: by email (handles when google_id is a session UUID)
+        if existing is None:
+            existing = await self.get_by_email(email)
+
         if existing:
+            # Always keep google_id up-to-date in case it changes (e.g. re-auth)
+            existing.google_id = google_id
             existing.name = name
-            existing.avatar_url = avatar_url
+            if avatar_url:
+                existing.avatar_url = avatar_url
             await self.session.flush()
             await self.session.refresh(existing)
             return existing
 
+        # No existing user — create fresh
         return await self.create(
             {
                 "google_id": google_id,
