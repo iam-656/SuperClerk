@@ -38,7 +38,17 @@ async def pubsub_pull_worker() -> None:
 
     logger.info("📬 Pub/Sub pull worker starting | subscription=%s", subscription)
 
-    subscriber = pubsub_v1.SubscriberClient()
+    # Attempt to create the subscriber client — fail gracefully if credentials are missing
+    try:
+        subscriber = pubsub_v1.SubscriberClient()
+    except Exception as exc:
+        logger.error(
+            "❌ Pub/Sub worker failed to initialise (bad credentials?): %s\n"
+            "   Set GOOGLE_APPLICATION_CREDENTIALS to a valid service-account-key.json path.\n"
+            "   Gmail push notifications are DISABLED until this is fixed.",
+            exc,
+        )
+        return  # Exit cleanly — the rest of the backend continues working
 
     while True:
         try:
@@ -96,6 +106,7 @@ async def pubsub_pull_worker() -> None:
 
     subscriber.close()
     logger.info("Pub/Sub pull worker stopped")
+
 
 
 async def _sync_user_by_email(email_address: str) -> None:

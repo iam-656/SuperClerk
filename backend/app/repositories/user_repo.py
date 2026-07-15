@@ -33,23 +33,25 @@ class UserRepository(BaseRepository[User]):
         avatar_url: str | None,
     ) -> User:
         """
-        Find an existing user by google_id OR email, then update their profile.
-        If no user exists, create one.
+        Find an existing user by google_id OR email, update their profile,
+        and return them. Create a new user only if neither lookup finds a match.
 
-        We look up by email as a fallback because the google_id sent by the
-        frontend may be a NextAuth-generated UUID (not the stable Google sub),
-        which changes between sessions. Email is the stable, unique identifier.
+        NOTE: We intentionally do NOT overwrite google_id on existing users.
+        The frontend sends session.user.id which is a NextAuth-generated UUID
+        (not the stable Google sub claim), and it changes every sign-in.
+        Since google_id has a UNIQUE constraint, overwriting it would fail on
+        any second sign-in that sends a different UUID. Email is the stable,
+        unique identifier we use to find returning users.
         """
-        # Primary lookup: by google_id (stable if frontend sends real Google sub)
+        # Primary lookup: by google_id (works if frontend sends stable Google sub)
         existing = await self.get_by_google_id(google_id)
 
-        # Fallback: by email (handles when google_id is a session UUID)
+        # Fallback: by email (handles NextAuth session UUIDs that change each login)
         if existing is None:
             existing = await self.get_by_email(email)
 
         if existing:
-            # Always keep google_id up-to-date in case it changes (e.g. re-auth)
-            existing.google_id = google_id
+            # Update mutable fields only — never touch google_id (UNIQUE constraint)
             existing.name = name
             if avatar_url:
                 existing.avatar_url = avatar_url
@@ -57,7 +59,7 @@ class UserRepository(BaseRepository[User]):
             await self.session.refresh(existing)
             return existing
 
-        # No existing user — create fresh
+        # Truly new user — create fresh row
         return await self.create(
             {
                 "google_id": google_id,
