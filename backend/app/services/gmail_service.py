@@ -159,6 +159,31 @@ def _parse_message(msg: dict) -> dict | None:
 
 # ─── Initial Sync ────────────────────────────────────────────
 
+async def _fetch_messages_batch(gmail, message_ids: list[str]) -> list[dict]:
+    """Fetch full message details in batches of 100."""
+    emails_data = []
+
+    def batch_callback(request_id, response, exception):
+        if exception is not None:
+            logger.warning("Failed to fetch message %s: %s", request_id, exception)
+        else:
+            parsed = _parse_message(response)
+            if parsed:
+                emails_data.append(parsed)
+
+    chunk_size = 100
+    for i in range(0, len(message_ids), chunk_size):
+        chunk = message_ids[i:i + chunk_size]
+        batch = gmail.new_batch_http_request(callback=batch_callback)
+        for msg_id in chunk:
+            batch.add(
+                gmail.users().messages().get(userId="me", id=msg_id, format="full"),
+                request_id=msg_id
+            )
+        await asyncio.to_thread(batch.execute)
+
+    return emails_data
+
 async def initial_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
     """
     Fetch the last N days of emails and store them.
@@ -184,20 +209,8 @@ async def initial_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
     )
 
     message_refs = response.get("messages", [])
-    emails_data = []
-
-    for ref in message_refs:
-        try:
-            msg = await asyncio.to_thread(
-                lambda r=ref: gmail.users().messages().get(
-                    userId="me", id=r["id"], format="full"
-                ).execute()
-            )
-            parsed = _parse_message(msg)
-            if parsed:
-                emails_data.append(parsed)
-        except Exception as exc:
-            logger.warning("Failed to fetch message %s: %s", ref["id"], exc)
+    message_ids = [ref["id"] for ref in message_refs]
+    emails_data = await _fetch_messages_batch(gmail, message_ids)
 
     # Bulk upsert into DB
     email_repo = EmailRepository(session)
@@ -275,19 +288,7 @@ async def incremental_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
         for msg_added in record.get("messagesAdded", []):
             message_ids.add(msg_added["message"]["id"])
 
-    emails_data = []
-    for msg_id in message_ids:
-        try:
-            msg = await asyncio.to_thread(
-                lambda m=msg_id: gmail.users().messages().get(
-                    userId="me", id=m, format="full"
-                ).execute()
-            )
-            parsed = _parse_message(msg)
-            if parsed:
-                emails_data.append(parsed)
-        except Exception as exc:
-            logger.warning("Failed to fetch message %s: %s", msg_id, exc)
+    emails_data = await _fetch_messages_batch(gmail, list(message_ids))
 
     email_repo = EmailRepository(session)
     inserted, skipped = await email_repo.bulk_upsert_emails(user_id, emails_data)
