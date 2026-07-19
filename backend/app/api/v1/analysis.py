@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from app.api.deps import DBSession
 from app.services.auth_service import verify_access_token
-from app.services.ai_service import analyze_unread_emails, get_saved_suggestions
+from app.services.ai_service import analyze_unread_emails, get_saved_suggestions, QuotaExhaustedError
 from app.services.gmail_service import send_reply
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,12 @@ async def analyze_inbox(
     logger.info("Analyze inbox triggered by user_id=%s", user_id)
     try:
         results = await analyze_unread_emails(db, user_id)
+    except QuotaExhaustedError as exc:
+        # All models exhausted — return 429 so the frontend shows a clear message
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

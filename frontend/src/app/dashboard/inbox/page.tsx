@@ -206,6 +206,11 @@ export default function InboxPage() {
       });
       if (!res.ok) {
         const errBody = await res.json().catch(() => ({}));
+        if (res.status === 429) {
+          throw new Error(
+            "⏳ Gemini AI rate limit reached. Please wait ~1 minute and try again."
+          );
+        }
         throw new Error(errBody.detail ?? `Analysis failed (HTTP ${res.status})`);
       }
       const data = await res.json();

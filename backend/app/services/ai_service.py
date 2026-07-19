@@ -7,9 +7,11 @@
 import asyncio
 import json
 import logging
+import time
 import uuid
 
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -18,6 +20,17 @@ from app.repositories.email_summary_repo import EmailSummaryRepository
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+# Models to try in order — fall back if one is rate-limited
+_MODEL_PRIORITY = [
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-8b",
+    "gemini-2.0-flash",
+]
+
+
+class QuotaExhaustedError(RuntimeError):
+    """Raised when all Gemini models are rate-limited."""
 
 
 # ─── Main analysis entry point ───────────────────────────────
@@ -66,23 +79,9 @@ async def analyze_unread_emails(
 
     prompt = _build_prompt(email_list)
 
-    # 3. Call Gemini (blocking I/O → thread)
+    # 3. Call Gemini with model fallback + retry
     genai.configure(api_key=settings.gemini_api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-
-    try:
-        response = await asyncio.to_thread(
-            model.generate_content,
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
-                response_mime_type="application/json",
-            ),
-        )
-        raw = response.text.strip()
-    except Exception as exc:
-        logger.error("Gemini API call failed: %s", exc, exc_info=True)
-        raise
+    raw = await _call_gemini_with_retry(prompt)
 
     # 4. Parse JSON response (Gemini returns pure JSON with response_mime_type)
     try:
@@ -155,6 +154,58 @@ async def get_saved_suggestions(
         })
 
     return results
+
+
+# ─── Gemini Caller with Retry + Model Fallback ───────────────
+
+async def _call_gemini_with_retry(prompt: str) -> str:
+    """
+    Try each model in _MODEL_PRIORITY order.
+    For each model, retry up to MAX_RETRIES times with exponential backoff
+    when a ResourceExhausted (429) error is returned.
+    Raises QuotaExhaustedError if all models and retries fail.
+    """
+    MAX_RETRIES = 3
+    BASE_DELAY = 5  # seconds
+
+    for model_name in _MODEL_PRIORITY:
+        model = genai.GenerativeModel(model_name)
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = await asyncio.to_thread(
+                    model.generate_content,
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.3,
+                        response_mime_type="application/json",
+                    ),
+                )
+                logger.info("Gemini call succeeded with model=%s attempt=%d", model_name, attempt)
+                return response.text.strip()
+
+            except ResourceExhausted as exc:
+                wait = BASE_DELAY * (2 ** (attempt - 1))  # 5s, 10s, 20s
+                logger.warning(
+                    "Gemini quota exhausted (model=%s attempt=%d/%d) — "
+                    "waiting %ds before retry. %s",
+                    model_name, attempt, MAX_RETRIES, wait, exc,
+                )
+                if attempt < MAX_RETRIES:
+                    await asyncio.sleep(wait)
+                else:
+                    # Exhausted retries for this model — try next model
+                    logger.warning("All retries exhausted for model=%s, trying next.", model_name)
+                    break
+
+            except Exception as exc:
+                # Non-quota error (e.g. invalid key, network) — raise immediately
+                logger.error("Gemini call failed (model=%s): %s", model_name, exc, exc_info=True)
+                raise
+
+    raise QuotaExhaustedError(
+        "All Gemini models are currently rate-limited. "
+        "Please wait a few minutes and try again."
+    )
 
 
 # ─── Prompt Builder ──────────────────────────────────────────
