@@ -1,16 +1,64 @@
+"use client";
+
 // ─────────────────────────────────────────────────────────────
 // SuperClerk — Approvals Center Page
 // ─────────────────────────────────────────────────────────────
 
-import type { Metadata } from "next";
-import { ShieldCheck } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { ShieldCheck, RefreshCw } from "lucide-react";
 import { ApprovalCard } from "@/components/approvals/ApprovalCard";
-import { mockApprovals } from "@/lib/mock-data";
-
-export const metadata: Metadata = { title: "Approvals" };
+import type { Approval } from "@/types";
 
 export default function ApprovalsPage() {
-  const pendingCount = mockApprovals.filter((a) => a.status === "pending").length;
+  const [approvals, setApprovals] = useState<Approval[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchApprovals = useCallback(async () => {
+    setLoading(true);
+    const token = sessionStorage.getItem("sc_access_token");
+    if (!token) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+      const res = await fetch(`${backendUrl}/api/v1/analysis/suggestions`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch");
+      const data = await res.json();
+      
+      const loaded: Approval[] = [];
+      for (const s of data.results ?? []) {
+        if (s.action === "reply") {
+          loaded.push({
+            id: s.email_id,
+            emailId: s.email_id,
+            emailSubject: s.subject,
+            sender: s.sender,
+            senderEmail: s.sender, // Approximation since we only have sender string
+            receivedAt: new Date().toISOString(), // We don't return receivedAt in suggestions API yet
+            draftReply: s.reply_draft || "",
+            reasoning: s.summary,
+            status: "pending",
+            createdAt: new Date().toISOString(),
+            priority: s.priority <= 2 ? "high" : s.priority === 3 ? "medium" : "low"
+          });
+        }
+      }
+      setApprovals(loaded);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchApprovals();
+  }, [fetchApprovals]);
+
+  const pendingCount = approvals.filter((a) => a.status === "pending").length;
 
   return (
     <div className="p-8 max-w-3xl mx-auto">
@@ -29,17 +77,27 @@ export default function ApprovalsPage() {
               Review AI-drafted replies before they&apos;re sent
             </p>
           </div>
-          {pendingCount > 0 && (
-            <div
-              className="flex items-center gap-2 px-4 py-2 rounded-xl"
-              style={{ background: "#FFFBEB", border: "1px solid #FDE68A" }}
+          <div className="flex items-center gap-4">
+            <button
+              onClick={fetchApprovals}
+              disabled={loading}
+              className="btn btn-secondary text-sm py-2 px-3 gap-2"
             >
-              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse-dot" />
-              <span className="text-sm font-medium" style={{ color: "#D97706" }}>
-                {pendingCount} awaiting your approval
-              </span>
-            </div>
-          )}
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              Refresh
+            </button>
+            {pendingCount > 0 && (
+              <div
+                className="flex items-center gap-2 px-4 py-2 rounded-xl"
+                style={{ background: "#FFFBEB", border: "1px solid #FDE68A" }}
+              >
+                <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse-dot" />
+                <span className="text-sm font-medium" style={{ color: "#D97706" }}>
+                  {pendingCount} awaiting your approval
+                </span>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -68,19 +126,23 @@ export default function ApprovalsPage() {
       </div>
 
       {/* ── Approval Cards ───────────────────────────── */}
-      {mockApprovals.length === 0 ? (
-        <div className="text-center py-20">
+      {loading ? (
+        <div className="flex justify-center py-20">
+          <RefreshCw size={32} className="animate-spin" style={{ color: "var(--color-primary)" }} />
+        </div>
+      ) : approvals.length === 0 ? (
+        <div className="text-center py-20 animate-fade-in">
           <p className="text-4xl mb-4">✅</p>
           <p className="font-medium" style={{ color: "var(--color-text)" }}>
             All caught up!
           </p>
           <p className="text-sm mt-1" style={{ color: "var(--color-text-muted)" }}>
-            No pending approvals right now
+            No pending AI replies awaiting your approval right now.
           </p>
         </div>
       ) : (
         <div className="space-y-6" role="feed" aria-label="Pending approvals">
-          {mockApprovals.map((approval, index) => (
+          {approvals.map((approval, index) => (
             <ApprovalCard key={approval.id} approval={approval} index={index} />
           ))}
         </div>
