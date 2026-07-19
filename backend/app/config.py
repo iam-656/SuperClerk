@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     # ─── Google / Gemini ────────────────────────────────────
     gemini_api_key: str = ""             # Gemini API key for AI email analysis
 
+    # ─── OpenRouter ─────────────────────────────────────────
+    openrouter_api_key: str = ""         # OpenRouter API key (fallback LLM)
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+
     @property
     def is_development(self) -> bool:
         return self.app_env == "development"
