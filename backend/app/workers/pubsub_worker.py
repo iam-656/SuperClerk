@@ -14,6 +14,7 @@ import base64
 import json
 import logging
 
+from google.api_core.exceptions import DeadlineExceeded
 from google.cloud import pubsub_v1
 
 from app.config import get_settings
@@ -52,8 +53,9 @@ async def pubsub_pull_worker() -> None:
 
     while True:
         try:
-            # Pull up to 5 messages at a time (non-blocking)
-            response = subscriber.pull(
+            # Pull up to 5 messages at a time (non-blocking event loop via to_thread)
+            response = await asyncio.to_thread(
+                subscriber.pull,
                 request={
                     "subscription": subscription,
                     "max_messages": 5,
@@ -93,10 +95,15 @@ async def pubsub_pull_worker() -> None:
 
             # Acknowledge processed messages
             if ack_ids:
-                subscriber.acknowledge(
+                await asyncio.to_thread(
+                    subscriber.acknowledge,
                     request={"subscription": subscription, "ack_ids": ack_ids}
                 )
 
+        except DeadlineExceeded:
+            # This is normal when there are no new emails (20s timeout hit)
+            # Just loop again immediately.
+            continue
         except asyncio.CancelledError:
             logger.info("Pub/Sub pull worker cancelled — shutting down")
             break
