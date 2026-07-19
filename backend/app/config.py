@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     gmail_initial_sync_days: int = 3     # Fetch last N days on first sync
     gmail_sync_interval_min: int = 15    # APScheduler fallback polling interval
 
+    # ─── Google / Gemini ────────────────────────────────────
+    gemini_api_key: str = ""             # Gemini API key for AI email analysis
+
     @property
     def is_development(self) -> bool:
         return self.app_env == "development"
@@ -60,4 +63,11 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     """Return cached settings singleton — safe to call anywhere."""
-    return Settings()
+    s = Settings()
+    
+    # Inject Google credentials into OS environment for Google SDKs
+    import os
+    if s.google_application_credentials:
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = s.google_application_credentials
+        
+    return s

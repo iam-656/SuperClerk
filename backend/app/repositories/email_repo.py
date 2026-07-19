@@ -52,6 +52,24 @@ class EmailRepository(BaseRepository[Email]):
         """Mark an email as processed by the AI agent."""
         return await self.update(email_id, {"is_processed": True})
 
+    async def get_unread_unprocessed(
+        self, user_id: uuid.UUID, limit: int = 20
+    ) -> list[Email]:
+        """
+        Return unread emails that have NOT yet been analysed by Gemini.
+        Used by the AI service to find work to do.
+        """
+        stmt = (
+            select(Email)
+            .where(Email.user_id == user_id)
+            .where(Email.is_read.is_(False))
+            .where(Email.is_processed.is_(False))
+            .order_by(Email.received_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def bulk_upsert_emails(
         self, user_id: uuid.UUID, emails_data: list[dict]
     ) -> tuple[int, int]:

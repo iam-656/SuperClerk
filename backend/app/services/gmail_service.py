@@ -14,6 +14,8 @@ import html
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -29,7 +31,7 @@ settings = get_settings()
 
 GMAIL_SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/gmail.send",
 ]
 
 
@@ -338,3 +340,83 @@ async def start_gmail_watch(gmail, user_id: uuid.UUID) -> None:
         )
     except Exception as exc:
         logger.error("Failed to start Gmail watch for user=%s: %s", user_id, exc)
+
+
+# ─── Send Reply ──────────────────────────────────────────────
+
+async def send_reply(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    email_id: uuid.UUID,
+    reply_body: str,
+) -> dict:
+    """
+    Send a reply to an email via Gmail API.
+    Fetches the original email from DB and Gmail to set proper threading headers.
+    Returns {"message_id": ..., "thread_id": ...} on success.
+    """
+    creds = await get_gmail_credentials(session, user_id)
+    if not creds:
+        return {"error": "No Google credentials — please sign out and sign back in."}
+
+    # Fetch original email from our DB
+    email_repo = EmailRepository(session)
+    original = await email_repo.get_by_id(email_id)
+    if not original:
+        return {"error": "Email not found in database."}
+
+    # Fetch the Gmail message to get the Message-ID header for threading
+    gmail = build("gmail", "v1", credentials=creds, cache_discovery=False)
+    try:
+        gmail_msg = await asyncio.to_thread(
+            lambda: gmail.users().messages().get(
+                userId="me",
+                id=original.gmail_id,
+                format="metadata",
+                metadataHeaders=["Message-ID", "References", "Subject", "From"],
+            ).execute()
+        )
+    except Exception as exc:
+        logger.error("Failed to fetch Gmail message for reply: %s", exc)
+        return {"error": f"Failed to fetch original message: {exc}"}
+
+    headers = {
+        h["name"].lower(): h["value"]
+        for h in gmail_msg.get("payload", {}).get("headers", [])
+    }
+    orig_message_id = headers.get("message-id", "")
+    orig_references = headers.get("references", "")
+
+    # Build MIME reply
+    msg = MIMEMultipart("alternative")
+    msg["To"] = original.sender
+    msg["Subject"] = (
+        original.subject
+        if original.subject.lower().startswith("re:")
+        else f"Re: {original.subject}"
+    )
+    if orig_message_id:
+        msg["In-Reply-To"] = orig_message_id
+        # Append to existing References chain
+        refs = f"{orig_references} {orig_message_id}".strip()
+        msg["References"] = refs
+
+    msg.attach(MIMEText(reply_body, "plain"))
+
+    # Encode and send
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    try:
+        sent = await asyncio.to_thread(
+            lambda: gmail.users().messages().send(
+                userId="me",
+                body={"raw": raw, "threadId": original.thread_id or ""},
+            ).execute()
+        )
+        logger.info(
+            "Reply sent: user=%s email_id=%s gmail_message_id=%s",
+            user_id, email_id, sent.get("id"),
+        )
+        return {"message_id": sent.get("id"), "thread_id": sent.get("threadId")}
+    except Exception as exc:
+        logger.error("Failed to send reply for user=%s: %s", user_id, exc)
+        return {"error": str(exc)}
