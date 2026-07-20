@@ -9,7 +9,7 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 
@@ -162,3 +162,25 @@ async def initial_sync_endpoint(
             detail=result["error"],
         )
     return {"status": "ok", **result}
+
+
+# ─── PATCH /emails/{email_id}/read ───────────────────────────
+
+@router.patch(
+    "/{email_id}/read",
+    summary="Mark an email as read",
+    status_code=status.HTTP_200_OK,
+)
+async def mark_email_read(
+    db: DBSession,
+    user_id: CurrentUser,
+    email_id: uuid.UUID = Path(...),
+) -> dict:
+    """Marks the given email as read in the database."""
+    repo = EmailRepository(db)
+    email = await repo.get(email_id)
+    if not email or email.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found.")
+    await repo.mark_as_read(email_id)
+    await db.commit()
+    return {"status": "ok", "email_id": str(email_id)}

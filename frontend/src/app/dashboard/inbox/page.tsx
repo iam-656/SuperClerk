@@ -1,11 +1,16 @@
 "use client";
 
 // ─────────────────────────────────────────────────────────────
-// SuperClerk — Inbox Page (Phase 6: AI-Powered Analysis)
-// Gmail integration + Gemini AI suggestions (reply / reminder)
+// SuperClerk — Inbox Page
+// All 5 fixes applied:
+// 1. Instant read-status UI update + backend persist
+// 2. Close button to exit email detail view
+// 3. Module-level cache for tab-switch persistence + background refresh
+// 4. Individual email "Analyse" button with inline result
+// 5. (Backend) Approve/Reject persisted — handled in ApprovalCard
 // ─────────────────────────────────────────────────────────────
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import {
   RefreshCw,
   Mail,
@@ -19,7 +24,7 @@ import {
   X,
   ChevronDown,
   ChevronUp,
-  CheckCircle,
+  ArrowLeft,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────
@@ -47,6 +52,7 @@ interface Suggestion {
   reply_draft: string | null;
   reminder_reason: string | null;
   priority: number;
+  approval_status?: string;
 }
 
 interface SyncResult {
@@ -54,6 +60,20 @@ interface SyncResult {
   skipped: number;
   new_messages_found?: number;
 }
+
+// ─── Module-level cache (persists across tab navigation) ─────
+// This lives outside React so it survives component unmount/remount.
+const _cache: {
+  emails: Email[];
+  suggestions: Record<string, Suggestion>;
+  lastSynced: Date | null;
+  readIds: Set<string>; // locally-marked-read before backend confirms
+} = {
+  emails: [],
+  suggestions: {},
+  lastSynced: null,
+  readIds: new Set(),
+};
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -93,19 +113,27 @@ function priorityLabel(p: number): { label: string; color: string; bg: string } 
 // ─── Component ───────────────────────────────────────────────
 
 export default function InboxPage() {
-  const [emails, setEmails] = useState<Email[]>([]);
-  const [loading, setLoading] = useState(true);
+  // ── Initialise from cache so tab-switch is instant ──────────
+  const [emails, setEmails] = useState<Email[]>(_cache.emails);
+  const [suggestions, setSuggestions] = useState<Record<string, Suggestion>>(
+    _cache.suggestions
+  );
+  const [lastSynced, setLastSynced] = useState<Date | null>(_cache.lastSynced);
+  // Track locally which email IDs have been read (optimistic update)
+  const [localReadIds, setLocalReadIds] = useState<Set<string>>(
+    new Set(_cache.readIds)
+  );
+
+  const [loading, setLoading] = useState(_cache.emails.length === 0);
   const [syncing, setSyncing] = useState(false);
   const [analysing, setAnalysing] = useState(false);
   const [syncResult, setSyncResult] = useState<SyncResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [lastSynced, setLastSynced] = useState<Date | null>(null);
 
-  // AI suggestion state
-  const [suggestions, setSuggestions] = useState<Record<string, Suggestion>>({});
-  const [showSuggestion, setShowSuggestion] = useState(true);
+  // Per-email analysis state
+  const [analysingEmailId, setAnalysingEmailId] = useState<string | null>(null);
 
   // Reply modal state
   const [replyOpen, setReplyOpen] = useState(false);
@@ -117,29 +145,50 @@ export default function InboxPage() {
   const [reminderDate, setReminderDate] = useState("");
   const [reminderNote, setReminderNote] = useState("");
 
+  // Collapsible suggestion card
+  const [showSuggestion, setShowSuggestion] = useState(true);
+
   const backendUrl =
     process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
-  // ─── Fetch stored emails ────────────────────────────────────
-  const fetchEmails = useCallback(async () => {
-    const token = sessionStorage.getItem("sc_access_token");
-    if (!token) return;
-    try {
-      const res = await fetch(
-        `${backendUrl}/api/v1/emails?page=1&page_size=50`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setEmails(data.items ?? []);
-    } catch {
-      setError("Failed to load emails. Is the backend running?");
-    } finally {
-      setLoading(false);
-    }
-  }, [backendUrl]);
+  // ─── Helpers to write-through to cache ─────────────────────
+  const updateEmails = useCallback((next: Email[]) => {
+    _cache.emails = next;
+    setEmails(next);
+  }, []);
 
-  // ─── Load saved suggestions ────────────────────────────────
+  const updateSuggestions = useCallback(
+    (next: Record<string, Suggestion>) => {
+      _cache.suggestions = next;
+      setSuggestions(next);
+    },
+    []
+  );
+
+  // ─── Fetch stored emails (background-safe) ─────────────────
+  const fetchEmails = useCallback(
+    async (silent = false) => {
+      const token = sessionStorage.getItem("sc_access_token");
+      if (!token) return;
+      if (!silent) setLoading(true);
+      try {
+        const res = await fetch(
+          `${backendUrl}/api/v1/emails?page=1&page_size=50`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        updateEmails(data.items ?? []);
+      } catch {
+        if (!silent) setError("Failed to load emails. Is the backend running?");
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [backendUrl, updateEmails]
+  );
+
+  // ─── Fetch saved suggestions ───────────────────────────────
   const fetchSuggestions = useCallback(async () => {
     const token = sessionStorage.getItem("sc_access_token");
     if (!token) return;
@@ -153,11 +202,58 @@ export default function InboxPage() {
       for (const s of data.results ?? []) {
         map[s.email_id] = s;
       }
-      setSuggestions(map);
+      updateSuggestions(map);
     } catch {
-      // non-fatal — suggestions are a bonus
+      // non-fatal
     }
-  }, [backendUrl]);
+  }, [backendUrl, updateSuggestions]);
+
+  // ─── Mark email as read (optimistic + backend) ─────────────
+  const markAsRead = useCallback(
+    async (emailId: string) => {
+      // 1. Optimistic UI update — instant, no loading
+      setLocalReadIds((prev) => {
+        const next = new Set(prev);
+        next.add(emailId);
+        _cache.readIds = next;
+        return next;
+      });
+      // Also update the email object itself so unread count is right
+      updateEmails(
+        _cache.emails.map((e) =>
+          e.id === emailId ? { ...e, is_read: true } : e
+        )
+      );
+      // 2. Persist to backend silently
+      const token = sessionStorage.getItem("sc_access_token");
+      if (!token) return;
+      try {
+        await fetch(`${backendUrl}/api/v1/emails/${emailId}/read`, {
+          method: "PATCH",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        // non-fatal — the UI is already updated
+      }
+    },
+    [backendUrl, updateEmails]
+  );
+
+  // ─── Select email ──────────────────────────────────────────
+  const selectEmail = useCallback(
+    (emailId: string) => {
+      setSelectedId(emailId);
+      setReplyOpen(false);
+      setReminderOpen(false);
+      setShowSuggestion(true);
+      // Mark as read if not already
+      const email = _cache.emails.find((e) => e.id === emailId);
+      if (email && !email.is_read && !_cache.readIds.has(emailId)) {
+        markAsRead(emailId);
+      }
+    },
+    [markAsRead]
+  );
 
   // ─── Sync ──────────────────────────────────────────────────
   const triggerSync = useCallback(
@@ -181,8 +277,11 @@ export default function InboxPage() {
         }
         const result = await res.json();
         setSyncResult(result);
-        setLastSynced(new Date());
-        await fetchEmails();
+        const now = new Date();
+        setLastSynced(now);
+        _cache.lastSynced = now;
+        // Background fetch — does NOT clear existing emails during request
+        await fetchEmails(true);
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : "Sync failed";
         if (!silent) setError(msg);
@@ -193,7 +292,7 @@ export default function InboxPage() {
     [backendUrl, fetchEmails]
   );
 
-  // ─── Analyze inbox with Gemini ─────────────────────────────
+  // ─── Bulk Analyze inbox ────────────────────────────────────
   const analyzeInbox = useCallback(async () => {
     const token = sessionStorage.getItem("sc_access_token");
     if (!token) return;
@@ -208,17 +307,17 @@ export default function InboxPage() {
         const errBody = await res.json().catch(() => ({}));
         if (res.status === 429) {
           throw new Error(
-            "⏳ Gemini AI rate limit reached. Please wait ~1 minute and try again."
+            "⏳ AI rate limit reached. Please wait ~1 minute and try again."
           );
         }
         throw new Error(errBody.detail ?? `Analysis failed (HTTP ${res.status})`);
       }
       const data = await res.json();
-      const map: Record<string, Suggestion> = { ...suggestions };
+      const map: Record<string, Suggestion> = { ..._cache.suggestions };
       for (const s of data.results ?? []) {
         map[s.email_id] = s;
       }
-      setSuggestions(map);
+      updateSuggestions(map);
       setSuccessMsg(
         `✨ Analysed ${data.analysed} email${data.analysed !== 1 ? "s" : ""}`
       );
@@ -228,7 +327,43 @@ export default function InboxPage() {
     } finally {
       setAnalysing(false);
     }
-  }, [backendUrl, suggestions]);
+  }, [backendUrl, updateSuggestions]);
+
+  // ─── Analyse single email ──────────────────────────────────
+  const analyzeSingleEmail = useCallback(
+    async (emailId: string) => {
+      const token = sessionStorage.getItem("sc_access_token");
+      if (!token) return;
+      setAnalysingEmailId(emailId);
+      setError(null);
+      try {
+        const res = await fetch(
+          `${backendUrl}/api/v1/analysis/analyze-email/${emailId}`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}` },
+          }
+        );
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          if (res.status === 429) {
+            throw new Error("⏳ AI rate limit reached. Please wait ~1 minute.");
+          }
+          throw new Error(errBody.detail ?? `Analysis failed (HTTP ${res.status})`);
+        }
+        const data = await res.json();
+        const map = { ..._cache.suggestions, [emailId]: data.result };
+        updateSuggestions(map);
+        setSuccessMsg("✨ Email analysed!");
+        setTimeout(() => setSuccessMsg(null), 3000);
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "Analysis failed");
+      } finally {
+        setAnalysingEmailId(null);
+      }
+    },
+    [backendUrl, updateSuggestions]
+  );
 
   // ─── Send reply ────────────────────────────────────────────
   const sendReply = useCallback(async () => {
@@ -264,6 +399,8 @@ export default function InboxPage() {
   }, [backendUrl, selectedId, replyBody]);
 
   // ─── Save reminder locally ─────────────────────────────────
+  const selectedEmail = emails.find((e) => e.id === selectedId);
+
   const saveReminder = useCallback(() => {
     if (!selectedId || !reminderDate) return;
     const reminders = JSON.parse(localStorage.getItem("sc_reminders") ?? "[]");
@@ -280,11 +417,17 @@ export default function InboxPage() {
     setReminderNote("");
     setSuccessMsg("⏰ Reminder saved!");
     setTimeout(() => setSuccessMsg(null), 3000);
-  }, [selectedId, reminderDate, reminderNote]);
+  }, [selectedId, reminderDate, reminderNote, selectedEmail]);
 
   // ─── Mount ─────────────────────────────────────────────────
   useEffect(() => {
-    fetchEmails();
+    // Only show loading if we have no cached data
+    if (_cache.emails.length === 0) {
+      fetchEmails(false);
+    } else {
+      // We have cached data — fetch silently in background to update
+      fetchEmails(true);
+    }
     fetchSuggestions();
   }, [fetchEmails, fetchSuggestions]);
 
@@ -293,18 +436,17 @@ export default function InboxPage() {
     return () => clearInterval(interval);
   }, [triggerSync]);
 
-  // Open reply modal pre-filled with draft
+  // Pre-fill reply modal with AI draft
   useEffect(() => {
     if (replyOpen && selectedId && suggestions[selectedId]?.reply_draft) {
       setReplyBody(suggestions[selectedId].reply_draft ?? "");
     }
   }, [replyOpen, selectedId, suggestions]);
 
-  // Open reminder modal pre-filled with reason
+  // Pre-fill reminder modal
   useEffect(() => {
     if (reminderOpen && selectedId && suggestions[selectedId]?.reminder_reason) {
       setReminderNote(suggestions[selectedId].reminder_reason ?? "");
-      // Default to tomorrow
       const tomorrow = new Date();
       tomorrow.setDate(tomorrow.getDate() + 1);
       tomorrow.setHours(9, 0, 0, 0);
@@ -312,9 +454,12 @@ export default function InboxPage() {
     }
   }, [reminderOpen, selectedId, suggestions]);
 
-  const unreadCount = emails.filter((e) => !e.is_read).length;
-  const selectedEmail = emails.find((e) => e.id === selectedId);
   const selectedSuggestion = selectedId ? suggestions[selectedId] : null;
+
+  // Determine effective read state (optimistic local or server value)
+  const isRead = (email: Email) => email.is_read || localReadIds.has(email.id);
+
+  const unreadCount = emails.filter((e) => !isRead(e)).length;
 
   // ─── Render ────────────────────────────────────────────────
 
@@ -364,14 +509,14 @@ export default function InboxPage() {
               disabled={analysing || loading}
               className="btn btn-secondary text-xs py-1.5 px-3 gap-1.5"
               aria-label="Analyse inbox with AI"
-              title="Analyse unread emails with Gemini AI"
+              title="Analyse unread emails with AI"
             >
               <Sparkles
                 size={13}
                 className={analysing ? "animate-pulse" : ""}
                 style={{ color: "var(--color-primary)" }}
               />
-              {analysing ? "Analysing…" : "Analyse"}
+              {analysing ? "Analysing…" : "Analyse All"}
             </button>
             <button
               id="btn-sync-emails"
@@ -447,15 +592,11 @@ export default function InboxPage() {
             <div className="divide-y" style={{ borderColor: "var(--color-border)" }}>
               {emails.map((email) => {
                 const hasSuggestion = !!suggestions[email.id];
+                const read = isRead(email);
                 return (
                   <button
                     key={email.id}
-                    onClick={() => {
-                      setSelectedId(email.id);
-                      setReplyOpen(false);
-                      setReminderOpen(false);
-                      setShowSuggestion(true);
-                    }}
+                    onClick={() => selectEmail(email.id)}
                     className="w-full text-left px-4 py-3.5 transition-colors hover:bg-[var(--color-surface)] focus:outline-none"
                     style={{
                       background: selectedId === email.id ? "var(--color-surface)" : "transparent",
@@ -490,7 +631,11 @@ export default function InboxPage() {
                         <div className="flex items-center justify-between gap-2 mb-0.5">
                           <p
                             className="text-sm truncate"
-                            style={{ color: "var(--color-text)", fontWeight: email.is_read ? 400 : 600 }}
+                            style={{
+                              color: "var(--color-text)",
+                              // Fix 1: use local read state for bold
+                              fontWeight: read ? 400 : 600,
+                            }}
                           >
                             {email.sender_name ?? email.sender}
                           </p>
@@ -500,7 +645,10 @@ export default function InboxPage() {
                         </div>
                         <p
                           className="text-xs mb-1 truncate"
-                          style={{ color: "var(--color-text)", fontWeight: email.is_read ? 400 : 500 }}
+                          style={{
+                            color: "var(--color-text)",
+                            fontWeight: read ? 400 : 500,
+                          }}
                         >
                           {email.subject}
                         </p>
@@ -509,8 +657,8 @@ export default function InboxPage() {
                         </p>
                       </div>
 
-                      {/* Unread dot */}
-                      {!email.is_read && (
+                      {/* Unread dot — disappears immediately on click */}
+                      {!read && (
                         <div
                           className="w-2 h-2 rounded-full flex-shrink-0 mt-2"
                           style={{ background: "var(--color-primary)" }}
@@ -530,30 +678,43 @@ export default function InboxPage() {
         {selectedEmail ? (
           <div className="flex flex-col h-full">
 
-            {/* Email header */}
+            {/* Email header with Close button (Fix 2) */}
             <div
-              className="px-8 py-6 border-b flex-shrink-0"
+              className="px-8 py-5 border-b flex-shrink-0 flex items-start justify-between gap-4"
               style={{ borderColor: "var(--color-border)" }}
             >
-              <h2 className="text-xl font-semibold mb-3" style={{ color: "var(--color-text)" }}>
-                {selectedEmail.subject}
-              </h2>
-              <div className="flex items-center gap-3">
-                <div
-                  className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold text-white"
-                  style={{ background: `hsl(${(selectedEmail.sender.charCodeAt(0) * 37) % 360}, 60%, 55%)` }}
-                >
-                  {getSenderInitials(selectedEmail.sender_name, selectedEmail.sender)}
-                </div>
-                <div>
-                  <p className="text-sm font-medium" style={{ color: "var(--color-text)" }}>
-                    {selectedEmail.sender_name ?? selectedEmail.sender}
-                  </p>
-                  <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
-                    {selectedEmail.sender} · {new Date(selectedEmail.received_at).toLocaleString()}
-                  </p>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-xl font-semibold mb-3" style={{ color: "var(--color-text)" }}>
+                  {selectedEmail.subject}
+                </h2>
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold text-white"
+                    style={{ background: `hsl(${(selectedEmail.sender.charCodeAt(0) * 37) % 360}, 60%, 55%)` }}
+                  >
+                    {getSenderInitials(selectedEmail.sender_name, selectedEmail.sender)}
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium" style={{ color: "var(--color-text)" }}>
+                      {selectedEmail.sender_name ?? selectedEmail.sender}
+                    </p>
+                    <p className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                      {selectedEmail.sender} · {new Date(selectedEmail.received_at).toLocaleString()}
+                    </p>
+                  </div>
                 </div>
               </div>
+              {/* Close / Back button */}
+              <button
+                id="btn-close-email"
+                onClick={() => setSelectedId(null)}
+                className="btn btn-secondary text-xs py-1.5 px-3 gap-1.5 flex-shrink-0 mt-1"
+                aria-label="Close email and return to inbox list"
+                title="Close"
+              >
+                <ArrowLeft size={13} />
+                Close
+              </button>
             </div>
 
             {/* AI Suggestion Card */}
@@ -608,7 +769,6 @@ export default function InboxPage() {
                     <p className="text-sm mb-4" style={{ color: "var(--color-text)" }}>
                       {selectedSuggestion.summary}
                     </p>
-
                     <div className="flex gap-2">
                       {selectedSuggestion.action === "reply" ? (
                         <button
@@ -633,6 +793,28 @@ export default function InboxPage() {
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* Individual Analyse button (Fix 4) — shown when no suggestion exists yet */}
+            {!selectedSuggestion && (
+              <div className="mx-6 mt-4 mb-2 flex-shrink-0">
+                <button
+                  id="btn-analyze-single"
+                  onClick={() => analyzeSingleEmail(selectedEmail.id)}
+                  disabled={analysingEmailId === selectedEmail.id}
+                  className="btn btn-secondary text-xs py-2 px-4 gap-2"
+                  style={{ borderColor: "var(--color-primary)", color: "var(--color-primary)" }}
+                >
+                  <Sparkles
+                    size={13}
+                    className={analysingEmailId === selectedEmail.id ? "animate-pulse" : ""}
+                    style={{ color: "var(--color-primary)" }}
+                  />
+                  {analysingEmailId === selectedEmail.id
+                    ? "Analysing this email…"
+                    : "✨ Analyse this email"}
+                </button>
               </div>
             )}
 
@@ -683,7 +865,6 @@ export default function InboxPage() {
             className="w-full max-w-2xl rounded-2xl shadow-2xl flex flex-col"
             style={{ background: "var(--color-bg)", maxHeight: "85vh" }}
           >
-            {/* Modal header */}
             <div
               className="flex items-center justify-between px-6 py-4 border-b"
               style={{ borderColor: "var(--color-border)" }}
@@ -708,7 +889,6 @@ export default function InboxPage() {
               </button>
             </div>
 
-            {/* AI draft notice */}
             {selectedSuggestion?.reply_draft && (
               <div
                 className="mx-6 mt-4 px-3 py-2 rounded-lg text-xs flex items-center gap-2"
@@ -719,7 +899,6 @@ export default function InboxPage() {
               </div>
             )}
 
-            {/* Textarea */}
             <div className="flex-1 overflow-y-auto px-6 py-4">
               <textarea
                 id="reply-textarea"
@@ -735,15 +914,11 @@ export default function InboxPage() {
               />
             </div>
 
-            {/* Modal footer */}
             <div
               className="flex items-center justify-end gap-3 px-6 py-4 border-t"
               style={{ borderColor: "var(--color-border)" }}
             >
-              <button
-                onClick={() => setReplyOpen(false)}
-                className="btn btn-secondary text-sm"
-              >
+              <button onClick={() => setReplyOpen(false)} className="btn btn-secondary text-sm">
                 Cancel
               </button>
               <button
@@ -779,7 +954,6 @@ export default function InboxPage() {
             className="w-full max-w-md rounded-2xl shadow-2xl"
             style={{ background: "var(--color-bg)" }}
           >
-            {/* Modal header */}
             <div
               className="flex items-center justify-between px-6 py-4 border-b"
               style={{ borderColor: "var(--color-border)" }}
@@ -804,73 +978,69 @@ export default function InboxPage() {
 
               {selectedSuggestion?.reminder_reason && (
                 <div
-                  className="px-3 py-2 rounded-lg text-xs"
-                  style={{ background: "#FEF9C3", color: "#92400E" }}
+                  className="px-3 py-2 rounded-lg text-xs flex items-start gap-2"
+                  style={{ background: "#FFFBEB", border: "1px solid #FDE68A", color: "#92400E" }}
                 >
-                  💡 {selectedSuggestion.reminder_reason}
+                  <Sparkles size={12} className="mt-0.5 flex-shrink-0" />
+                  {selectedSuggestion.reminder_reason}
                 </div>
               )}
 
               <div>
-                <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--color-text)" }}>
-                  Remind me at
+                <label className="text-xs font-medium mb-1.5 block" style={{ color: "var(--color-text)" }}>
+                  Remind me on
                 </label>
                 <input
-                  id="reminder-datetime"
                   type="datetime-local"
                   value={reminderDate}
                   onChange={(e) => setReminderDate(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border text-sm outline-none focus:border-[var(--color-primary)]"
+                  className="w-full rounded-xl px-4 py-2.5 text-sm border outline-none focus:border-[var(--color-primary)]"
                   style={{
                     background: "var(--color-surface)",
-                    borderColor: "var(--color-border)",
                     color: "var(--color-text)",
+                    borderColor: "var(--color-border)",
                   }}
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium mb-1.5" style={{ color: "var(--color-text)" }}>
+                <label className="text-xs font-medium mb-1.5 block" style={{ color: "var(--color-text)" }}>
                   Note (optional)
                 </label>
                 <textarea
-                  id="reminder-note"
                   value={reminderNote}
                   onChange={(e) => setReminderNote(e.target.value)}
                   rows={3}
-                  className="w-full px-3 py-2 rounded-lg border text-sm outline-none resize-none focus:border-[var(--color-primary)]"
+                  className="w-full rounded-xl px-4 py-2.5 text-sm border outline-none resize-none focus:border-[var(--color-primary)]"
                   style={{
                     background: "var(--color-surface)",
-                    borderColor: "var(--color-border)",
                     color: "var(--color-text)",
+                    borderColor: "var(--color-border)",
                   }}
-                  placeholder="What do you need to do?"
+                  placeholder="What should you do when reminded?"
                 />
               </div>
             </div>
 
             <div
-              className="flex justify-end gap-3 px-6 py-4 border-t"
+              className="flex items-center justify-end gap-3 px-6 py-4 border-t"
               style={{ borderColor: "var(--color-border)" }}
             >
               <button onClick={() => setReminderOpen(false)} className="btn btn-secondary text-sm">
                 Cancel
               </button>
               <button
-                id="btn-save-reminder"
                 onClick={saveReminder}
                 disabled={!reminderDate}
-                className="btn text-sm gap-2"
-                style={{ background: "#FEF9C3", color: "#92400E", border: "1px solid #FDE68A" }}
+                className="btn btn-primary text-sm gap-2"
               >
-                <CheckCircle size={14} />
+                <Bell size={14} />
                 Save Reminder
               </button>
             </div>
           </div>
         </div>
       )}
-
     </div>
   );
 }

@@ -30,18 +30,19 @@ export default function ApprovalsPage() {
       
       const loaded: Approval[] = [];
       for (const s of data.results ?? []) {
-        if (s.action === "reply") {
+        // Only show pending "reply" suggestions in Approvals
+        if (s.action === "reply" && s.approval_status !== "rejected") {
           loaded.push({
             id: s.email_id,
             emailId: s.email_id,
             emailSubject: s.subject,
             sender: s.sender,
-            senderEmail: s.sender, // Approximation since we only have sender string
-            receivedAt: new Date().toISOString(), // We don't return receivedAt in suggestions API yet
+            senderEmail: s.sender_email || s.sender,
+            receivedAt: s.received_at || new Date().toISOString(),
             draftReply: s.reply_draft || "",
             reasoning: s.summary,
-            status: "pending",
-            createdAt: new Date().toISOString(),
+            status: (s.approval_status as "pending" | "approved" | "rejected" | "edited") || "pending",
+            createdAt: s.received_at || new Date().toISOString(),
             priority: s.priority <= 2 ? "high" : s.priority === 3 ? "medium" : "low"
           });
         }

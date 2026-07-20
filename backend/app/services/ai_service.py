@@ -155,14 +155,93 @@ async def get_saved_suggestions(
             "email_id": str(s.email_id),
             "subject": email.subject if email else "",
             "sender": email.sender_name or email.sender if email else "",
+            "sender_email": email.sender if email else "",
+            "received_at": email.received_at.isoformat() if email and email.received_at else None,
             "summary": s.summary,
             "action": action,
             "reply_draft": s.suggested_action if action == "reply" else None,
             "reminder_reason": s.suggested_action if action == "reminder" else None,
             "priority": s.priority,
+            "approval_status": s.approval_status or "pending",
         })
 
     return results
+
+
+async def analyze_single_email(
+    session: AsyncSession, user_id: uuid.UUID, email_id: uuid.UUID
+) -> dict | None:
+    """
+    Run AI analysis on a single email (for individual email analysis button).
+    Returns the suggestion dict or None if the email is not found.
+    Always re-analyses even if the email was previously processed.
+    """
+    from app.repositories.email_repo import EmailRepository as _EmailRepo
+
+    email_repo = _EmailRepo(session)
+    # Fetch the specific email, ensuring it belongs to the user
+    from sqlalchemy import select
+    from app.models.email import Email
+    stmt = (
+        select(Email)
+        .where(Email.id == email_id)
+        .where(Email.user_id == user_id)
+    )
+    result = await session.execute(stmt)
+    email = result.scalar_one_or_none()
+    if not email:
+        return None
+
+    prompt = _build_prompt([{
+        "email_id": str(email.id),
+        "subject": email.subject,
+        "sender": email.sender_name or email.sender,
+        "sender_email": email.sender,
+        "body": (email.body_text or email.snippet or "")[:2000],
+    }])
+
+    raw = await _call_openrouter_with_fallback(prompt)
+
+    try:
+        text = raw.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:])
+            text = text.rsplit("```", 1)[0].strip()
+        parsed: list[dict] = json.loads(text)
+        if not parsed:
+            return None
+        item = parsed[0]
+    except (json.JSONDecodeError, IndexError) as exc:
+        logger.error("Failed to parse single-email LLM response: %s", exc)
+        raise ValueError(f"AI returned invalid JSON: {exc}") from exc
+
+    summary_repo = EmailSummaryRepository(session)
+    await summary_repo.upsert(
+        email_id=email_id,
+        summary=item.get("summary", ""),
+        action=item.get("action", "reminder"),
+        reply_draft=item.get("reply_draft"),
+        reminder_reason=item.get("reminder_reason"),
+        priority=int(item.get("priority", 3)),
+    )
+    await email_repo.mark_as_processed(email_id)
+    await session.commit()
+
+    action = item.get("action", "reminder")
+    return {
+        "email_id": str(email_id),
+        "subject": email.subject,
+        "sender": email.sender_name or email.sender,
+        "sender_email": email.sender,
+        "received_at": email.received_at.isoformat() if email.received_at else None,
+        "summary": item.get("summary", ""),
+        "action": action,
+        "reply_draft": item.get("reply_draft") if action == "reply" else None,
+        "reminder_reason": item.get("reminder_reason") if action == "reminder" else None,
+        "priority": int(item.get("priority", 3)),
+        "approval_status": "pending",
+    }
 
 
 # ─── OpenRouter Caller with Fallback ─────────────────────────

@@ -66,6 +66,12 @@ class EmailSummary(Base):
         nullable=True,
         comment="AI-suggested next action (e.g. 'Reply with quote')",
     )
+    approval_status: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+        default=None,
+        comment="User decision: 'pending' | 'approved' | 'rejected'",
+    )
 
     # ─── Timestamps ─────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(

@@ -30,6 +30,18 @@ class EmailSummaryRepository(BaseRepository[EmailSummary]):
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 
+    async def update_approval_status(
+        self, email_id: uuid.UUID, status: str
+    ) -> EmailSummary | None:
+        """Persist an approve/reject decision. status: 'approved' | 'rejected'"""
+        existing = await self.get_by_email_id(email_id)
+        if not existing:
+            return None
+        existing.approval_status = status
+        await self.session.flush()
+        await self.session.refresh(existing)
+        return existing
+
     async def upsert(
         self,
         email_id: uuid.UUID,

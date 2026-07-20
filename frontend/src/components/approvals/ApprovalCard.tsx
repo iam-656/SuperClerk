@@ -2,10 +2,11 @@
 
 // ─────────────────────────────────────────────────────────────
 // SuperClerk — Approval Card Component
+// Fix 5: Reject (and Approve) now persists to backend DB.
 // ─────────────────────────────────────────────────────────────
 
 import { useState } from "react";
-import { Check, Pencil, X, ChevronDown, ChevronUp, Lightbulb } from "lucide-react";
+import { Check, Pencil, X, ChevronDown, ChevronUp, Lightbulb, RefreshCw } from "lucide-react";
 import type { Approval, Priority } from "@/types";
 import { formatRelativeTime, getInitials } from "@/lib/utils";
 
@@ -23,10 +24,66 @@ interface ApprovalCardProps {
 export function ApprovalCard({ approval, index }: ApprovalCardProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [actionTaken, setActionTaken] = useState<"approved" | "rejected" | null>(null);
+  const [isActioning, setIsActioning] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [editedReply, setEditedReply] = useState(approval.draftReply);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
   const priority = priorityConfig[approval.priority];
   const initials = getInitials(approval.sender);
   const delayClass = `delay-${(index + 1) * 200}`;
+
+  // ─── Persist decision to backend ─────────────────────────
+  const persistDecision = async (
+    newStatus: "approved" | "rejected"
+  ): Promise<boolean> => {
+    const token = sessionStorage.getItem("sc_access_token");
+    if (!token) return false;
+    try {
+      const res = await fetch(
+        `${backendUrl}/api/v1/analysis/status/${approval.emailId}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ approval_status: newStatus }),
+        }
+      );
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  const handleApprove = async () => {
+    setIsActioning(true);
+    setActionError(null);
+    const ok = await persistDecision("approved");
+    if (!ok) {
+      setActionError("Failed to save decision. Please try again.");
+      setIsActioning(false);
+      return;
+    }
+    setActionTaken("approved");
+    setIsActioning(false);
+  };
+
+  const handleReject = async () => {
+    setIsActioning(true);
+    setActionError(null);
+    const ok = await persistDecision("rejected");
+    if (!ok) {
+      setActionError("Failed to save decision. Please try again.");
+      setIsActioning(false);
+      return;
+    }
+    setActionTaken("rejected");
+    setIsActioning(false);
+  };
 
   if (actionTaken) {
     return (
@@ -123,19 +180,39 @@ export function ApprovalCard({ approval, index }: ApprovalCardProps) {
 
         {isExpanded && (
           <div className="px-5 pb-5">
-            <pre
-              className="text-sm leading-relaxed whitespace-pre-wrap font-sans rounded-xl p-4"
-              style={{
-                background: "var(--color-bg)",
-                border: "1px solid var(--color-border)",
-                color: "var(--color-text)",
-              }}
-            >
-              {approval.draftReply}
-            </pre>
+            {editMode ? (
+              <textarea
+                className="w-full h-40 resize-none rounded-xl p-4 text-sm outline-none border focus:border-[var(--color-primary)]"
+                style={{
+                  background: "var(--color-bg)",
+                  border: "1px solid var(--color-border)",
+                  color: "var(--color-text)",
+                }}
+                value={editedReply}
+                onChange={(e) => setEditedReply(e.target.value)}
+              />
+            ) : (
+              <pre
+                className="text-sm leading-relaxed whitespace-pre-wrap font-sans rounded-xl p-4"
+                style={{
+                  background: "var(--color-bg)",
+                  border: "1px solid var(--color-border)",
+                  color: "var(--color-text)",
+                }}
+              >
+                {editedReply}
+              </pre>
+            )}
           </div>
         )}
       </div>
+
+      {/* Error message */}
+      {actionError && (
+        <div className="px-5 pb-3 text-xs text-red-600">
+          ⚠ {actionError}
+        </div>
+      )}
 
       {/* Actions */}
       <div
@@ -144,28 +221,31 @@ export function ApprovalCard({ approval, index }: ApprovalCardProps) {
       >
         <button
           id={`btn-approve-${approval.id}`}
-          onClick={() => setActionTaken("approved")}
-          className="btn btn-success flex-1"
+          onClick={handleApprove}
+          disabled={isActioning}
+          className="btn btn-success flex-1 gap-2"
           aria-label={`Approve draft reply to ${approval.sender}`}
         >
-          <Check size={16} />
-          Approve & Send
+          {isActioning ? <RefreshCw size={14} className="animate-spin" /> : <Check size={16} />}
+          Approve &amp; Send
         </button>
         <button
           id={`btn-edit-${approval.id}`}
+          onClick={() => setEditMode((v) => !v)}
           className="btn btn-secondary"
           aria-label="Edit draft"
         >
           <Pencil size={14} />
-          Edit
+          {editMode ? "Preview" : "Edit"}
         </button>
         <button
           id={`btn-reject-${approval.id}`}
-          onClick={() => setActionTaken("rejected")}
+          onClick={handleReject}
+          disabled={isActioning}
           className="btn btn-danger"
           aria-label={`Reject draft reply to ${approval.sender}`}
         >
-          <X size={14} />
+          {isActioning ? <RefreshCw size={14} className="animate-spin" /> : <X size={14} />}
           Reject
         </button>
       </div>
