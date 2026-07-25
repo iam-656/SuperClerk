@@ -33,13 +33,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
       authorization: {
         params: {
-          // Request Gmail scopes upfront for Phase 3 Gmail integration
+          // Request Gmail, Tasks, and Calendar scopes for agentic workflows
           scope: [
             "openid",
             "email",
             "profile",
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/tasks",
+            "https://www.googleapis.com/auth/calendar.events",
           ].join(" "),
           access_type: "offline",
           prompt: "consent",

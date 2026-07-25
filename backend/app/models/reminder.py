@@ -63,6 +63,21 @@ class Reminder(Base):
         nullable=False,
         index=True,
     )
+    google_task_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Linked Google Task ID for priority morphing",
+    )
+    google_event_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Linked Google Calendar Event ID for focus blocks",
+    )
+    task_type: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Type of task (e.g. 'follow_up', 'focus')",
+    )
 
     # ─── Timestamps ─────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(

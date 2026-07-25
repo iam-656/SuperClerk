@@ -36,63 +36,7 @@ GMAIL_SCOPES = [
 ]
 
 
-# ─── Credential Builder ──────────────────────────────────────
-
-async def get_gmail_credentials(
-    session: AsyncSession, user_id: uuid.UUID
-) -> Credentials | None:
-    """
-    Reconstruct Google OAuth2 Credentials from the DB.
-    Automatically refreshes the access_token if expired and saves it back.
-    Returns None if no Google account is connected or credentials are unusable.
-    """
-    ca_repo = ConnectedAccountRepository(session)
-    account = await ca_repo.get_by_user_and_provider(user_id, "google")
-
-    if not account or not account.access_token:
-        logger.warning("No Google account found for user_id=%s", user_id)
-        return None
-
-    creds = Credentials(
-        token=account.access_token,
-        refresh_token=account.refresh_token or None,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=settings.google_client_id,
-        client_secret=settings.google_client_secret,
-        scopes=account.scopes or GMAIL_SCOPES,
-    )
-
-    # If token is expired and we have no refresh_token, we can't do anything.
-    # This happens when the user signed in before refresh_token was saved to DB.
-    # The user must sign out and sign back in to get a fresh refresh_token.
-    if creds.expired and not creds.refresh_token:
-        logger.warning(
-            "Access token expired and no refresh_token stored for user_id=%s. "
-            "User must sign out and sign back in.",
-            user_id,
-        )
-        return None
-
-    # Auto-refresh if expired
-    if creds.expired and creds.refresh_token:
-        try:
-            await asyncio.to_thread(creds.refresh, Request())
-            # Save refreshed token back to DB
-            await ca_repo.upsert_google_tokens(
-                user_id=user_id,
-                provider_account_id=account.provider_account_id,
-                access_token=creds.token,
-                refresh_token=creds.refresh_token,
-                scopes=list(creds.scopes) if creds.scopes else None,
-                expires_at=creds.expiry,
-            )
-            await session.commit()
-            logger.info("Refreshed Google token for user_id=%s", user_id)
-        except Exception as exc:
-            logger.error("Token refresh failed for user_id=%s: %s", user_id, exc)
-            return None
-
-    return creds
+from app.services.google_auth_service import get_google_credentials as get_gmail_credentials
 
 
 # ─── Message Parsing ─────────────────────────────────────────
@@ -297,6 +241,32 @@ async def incremental_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
     inserted, skipped = await email_repo.bulk_upsert_emails(user_id, emails_data)
     await session.commit()
 
+    # Feature 3: No-Reply Safety Net (On Reply)
+    from sqlalchemy import select
+    from app.models.reminder import Reminder
+    from app.models.email import Email as EmailModel
+    from app.services.tasks_service import complete_google_task
+    
+    for email_data in emails_data:
+        thread_id = email_data.get("thread_id")
+        if thread_id:
+            stmt = (
+                select(Reminder)
+                .join(EmailModel, EmailModel.id == Reminder.email_id)
+                .where(EmailModel.thread_id == thread_id)
+                .where(Reminder.user_id == user_id)
+                .where(Reminder.task_type == "follow_up")
+                .where(Reminder.is_completed.is_(False))
+            )
+            result = await session.execute(stmt)
+            pending_reminders = result.scalars().all()
+            for reminder in pending_reminders:
+                reminder.is_completed = True
+                if reminder.google_task_id:
+                    await complete_google_task(session, user_id, reminder.google_task_id)
+                logger.info("Safety net satisfied: received reply in thread %s. Completed task for email_id=%s", thread_id, reminder.email_id)
+            await session.commit()
+
     # Fix 6: Sync deletions — remove trashed/deleted messages from our DB
     deleted_count = await _sync_deletions(session, user_id, history, gmail)
     if deleted_count > 0:
@@ -482,6 +452,34 @@ async def send_reply(
             "Reply sent: user=%s email_id=%s gmail_message_id=%s",
             user_id, email_id, sent.get("id"),
         )
+
+        # Feature 3: No-Reply Safety Net (On Send)
+        from app.repositories.email_summary_repo import EmailSummaryRepository
+        from app.models.reminder import Reminder
+        from app.repositories.reminder_repo import ReminderRepository
+        from app.services.tasks_service import create_google_task
+        from datetime import timedelta
+
+        summary_repo = EmailSummaryRepository(session)
+        summary = await summary_repo.get_by_email(email_id)
+        if summary and summary.requires_followup:
+            task_title = f"Follow up on: {original.subject}"
+            due_date = datetime.now(timezone.utc) + timedelta(days=3)
+            google_task_id = await create_google_task(
+                session=session, user_id=user_id, title=task_title, due_date=due_date
+            )
+            reminder_repo = ReminderRepository(session)
+            await reminder_repo.create({
+                "user_id": user_id,
+                "email_id": email_id,
+                "subject": original.subject,
+                "note": "AI identified this email as needing a response.",
+                "remind_at": due_date,
+                "google_task_id": google_task_id,
+                "task_type": "follow_up"
+            })
+            logger.info("Spawned safety net follow-up task for email_id=%s", email_id)
+
         return {"message_id": sent.get("id"), "thread_id": sent.get("threadId")}
     except Exception as exc:
         logger.error("Failed to send reply for user=%s: %s", user_id, exc)

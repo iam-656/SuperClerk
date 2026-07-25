@@ -155,6 +155,15 @@ async def analyze_unread_emails(
                 reminder_reason=result.get("reminder_reason"),
                 priority=int(result.get("priority", 3)),
             )
+            # Update the existing summary to set requires_followup since upsert might not have it
+            # Actually, let's just pass it to upsert in email_summary_repo, but since we didn't add it to upsert args yet, we can do an update.
+            # I will modify upsert inside email_summary_repo.py later. For now let's just get the object and set it.
+            stmt = select(EmailSummary).where(EmailSummary.email_id == email_id)
+            res = await session.execute(stmt)
+            summary_obj = res.scalar_one_or_none()
+            if summary_obj:
+                summary_obj.requires_followup = result.get("requires_followup", False)
+
             await email_repo.mark_as_processed(email_id)
 
             # Fix 5: Auto-create Reminder record if action is "reminder"
@@ -166,6 +175,7 @@ async def analyze_unread_emails(
                     email_id=email_id,
                     subject=email_obj.subject if email_obj else "(no subject)",
                     note=result.get("reminder_reason"),
+                    session=session, # passed session to allow auto_scheduler
                 )
 
         except Exception as exc:
@@ -355,6 +365,7 @@ async def _auto_create_reminder(
     email_id: uuid.UUID,
     subject: str,
     note: str | None,
+    session: AsyncSession = None,
 ) -> None:
     """
     Automatically persist a Reminder row when the AI decides action="reminder".
@@ -378,12 +389,31 @@ async def _auto_create_reminder(
             return
 
         remind_at = datetime.now(timezone.utc) + timedelta(days=1)
+        
+        # Feature 1: Predictive Time-Blocking
+        google_task_id = None
+        google_event_id = None
+        if session:
+            try:
+                from app.services.auto_scheduler import auto_schedule_task
+                task_title = f"Follow-up: {subject}"
+                google_task_id, google_event_id, remind_at = await auto_schedule_task(
+                    session=session,
+                    user_id=user_id,
+                    action_title=task_title,
+                    duration_hrs=1
+                )
+            except Exception as e:
+                logger.error("Failed to auto-schedule task/event: %s", e)
+
         await reminder_repo.create({
             "user_id": user_id,
             "email_id": email_id,
             "subject": subject,
             "note": note,
             "remind_at": remind_at,
+            "google_task_id": google_task_id,
+            "google_event_id": google_event_id,
         })
         logger.info("Auto-created reminder for email_id=%s", email_id)
     except Exception as exc:
@@ -478,6 +508,7 @@ Rules:
 - For action "reminder": Write reminder_reason as a short sentence explaining what to follow up on and by when (if a date is mentioned in the email).
 - NEVER mention AI, SuperClerk, or any assistant in the reply draft.
 - priority: 1=urgent/critical, 2=high, 3=medium, 4=low, 5=ignore (newsletters, spam)
+- requires_followup: true ONLY if the email contains a proposal, an open question, or explicitly requires a response. Otherwise false.
 
 Return ONLY a valid JSON array (no markdown, no explanation):
 [
@@ -487,7 +518,8 @@ Return ONLY a valid JSON array (no markdown, no explanation):
     "action": "reply", "reminder", or "none",
     "reply_draft": "<full reply text if action=reply, else null>",
     "reminder_reason": "<brief follow-up reason if action=reminder, else null>",
-    "priority": <integer 1-5>
+    "priority": <integer 1-5>,
+    "requires_followup": <boolean>
   }}
 ]
 

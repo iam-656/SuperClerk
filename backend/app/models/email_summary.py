@@ -61,6 +61,11 @@ class EmailSummary(Base):
         nullable=True,
         comment="Whether the AI recommends a response/action",
     )
+    requires_followup: Mapped[bool | None] = mapped_column(
+        nullable=True,
+        default=False,
+        comment="If true, a background task will spawn a follow-up reminder on send",
+    )
     suggested_action: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
