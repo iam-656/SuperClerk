@@ -9,7 +9,7 @@ import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status, BackgroundTasks
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError
 
@@ -95,6 +95,7 @@ async def list_emails(
     status_code=status.HTTP_200_OK,
 )
 async def sync_emails(
+    background_tasks: BackgroundTasks,
     db: DBSession,
     user_id: CurrentUser,
 ) -> dict:
@@ -128,7 +129,23 @@ async def sync_emails(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=detail,
         )
+        
+    if result.get("inserted", 0) > 0:
+        background_tasks.add_task(_run_analysis_in_background, user_id)
+        
     return {"status": "ok", **result}
+
+async def _run_analysis_in_background(user_id: uuid.UUID) -> None:
+    """Helper to run AI analysis in the background with a fresh DB session."""
+    from app.database import AsyncSessionLocal
+    from app.services.ai_service import analyze_unread_emails
+    
+    async with AsyncSessionLocal() as session:
+        try:
+            logger.info("Manual sync: auto-analyzing new emails for user=%s", user_id)
+            await analyze_unread_emails(session, user_id)
+        except Exception as exc:
+            logger.error("Manual sync auto-analysis failed for user=%s: %s", user_id, exc)
 
 
 # ─── POST /emails/initial ────────────────────────────────────
@@ -178,7 +195,7 @@ async def mark_email_read(
 ) -> dict:
     """Marks the given email as read in the database."""
     repo = EmailRepository(db)
-    email = await repo.get(email_id)
+    email = await repo.get_by_id(email_id)
     if not email or email.user_id != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found.")
     await repo.mark_as_read(email_id)

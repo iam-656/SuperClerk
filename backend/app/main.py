@@ -17,6 +17,7 @@ from app.api.v1.health import router as health_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.emails import router as emails_router
 from app.api.v1.analysis import router as analysis_router
+from app.api.v1.reminders import router as reminders_router
 from app.config import get_settings
 from app.database import check_db_connection
 from app.scheduler import start_scheduler, stop_scheduler
@@ -125,6 +126,7 @@ app.include_router(health_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(emails_router, prefix="/api/v1")
 app.include_router(analysis_router, prefix="/api/v1")
+app.include_router(reminders_router, prefix="/api/v1")
 
 
 # ─── Root Redirect ──────────────────────────────────────────

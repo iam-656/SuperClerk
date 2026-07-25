@@ -1,12 +1,12 @@
 // ─────────────────────────────────────────────────────────────
-// SuperClerk — Dashboard Home Page
+// SuperClerk — Dashboard Home Page (Server Shell)
+// Renders greeting/header server-side; live stats are loaded
+// client-side by <DashboardClient />.
 // ─────────────────────────────────────────────────────────────
 
 import type { Metadata } from "next";
 import { auth } from "@/auth";
-import { StatCard } from "@/components/dashboard/StatCard";
-import { ActivityTimeline } from "@/components/dashboard/ActivityTimeline";
-import { mockStats, mockTimeline } from "@/lib/mock-data";
+import { DashboardClient } from "@/components/dashboard/DashboardClient";
 import { getGreeting, getFirstName } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard" };
@@ -61,89 +61,8 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      {/* ── Main Content ──────────────────────────────── */}
-      <div className="flex gap-8">
-        {/* Left Column */}
-        <div className="flex-1 space-y-8">
-          {/* Stat Cards */}
-          <section aria-label="Dashboard statistics">
-            <div className="grid grid-cols-2 gap-4">
-              {mockStats.map((stat, index) => (
-                <StatCard key={stat.id} stat={stat} index={index} />
-              ))}
-            </div>
-          </section>
-
-          {/* Quick Actions */}
-          <section aria-label="Quick actions">
-            <h2
-              className="text-sm font-semibold uppercase tracking-wider mb-4"
-              style={{ color: "var(--color-text-muted)" }}
-            >
-              Quick Actions
-            </h2>
-            <div className="grid grid-cols-2 gap-4">
-              {[
-                {
-                  label: "Review Inbox",
-                  desc: "7 emails awaiting analysis",
-                  href: "/dashboard/inbox",
-                  icon: "📧",
-                  color: "#EDE9FE",
-                },
-                {
-                  label: "Approve Replies",
-                  desc: "2 drafts need your sign-off",
-                  href: "/dashboard/approvals",
-                  icon: "✅",
-                  color: "#FEF3C7",
-                },
-              ].map(({ label, desc, href, icon, color }) => (
-                <a
-                  key={label}
-                  href={href}
-                  className="card p-4 flex items-center gap-4"
-                  id={`quick-action-${label.toLowerCase().replace(" ", "-")}`}
-                >
-                  <div
-                    className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0"
-                    style={{ background: color }}
-                  >
-                    {icon}
-                  </div>
-                  <div>
-                    <p className="font-semibold text-sm" style={{ color: "var(--color-text)" }}>
-                      {label}
-                    </p>
-                    <p className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>
-                      {desc}
-                    </p>
-                  </div>
-                </a>
-              ))}
-            </div>
-          </section>
-        </div>
-
-        {/* Right Column — Activity Timeline */}
-        <aside
-          className="w-72 flex-shrink-0 rounded-2xl p-5"
-          style={{
-            background: "var(--color-bg)",
-            border: "1px solid var(--color-border)",
-            height: "fit-content",
-          }}
-          aria-label="Agent activity timeline"
-        >
-          <div className="flex items-center justify-between mb-5">
-            <h2 className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>
-              Agent Activity
-            </h2>
-            <span className="badge badge-purple">Today</span>
-          </div>
-          <ActivityTimeline events={mockTimeline} />
-        </aside>
-      </div>
+      {/* ── Live Stats + Timeline (client-side) ──────── */}
+      <DashboardClient />
     </div>
   );
 }

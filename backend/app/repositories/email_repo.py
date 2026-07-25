@@ -56,14 +56,19 @@ class EmailRepository(BaseRepository[Email]):
         self, user_id: uuid.UUID, limit: int = 20
     ) -> list[Email]:
         """
-        Return unread emails that have NOT yet been analysed by Gemini.
-        Used by the AI service to find work to do.
+        Return unread INBOUND emails that have NOT yet been analysed by the AI.
+        Fix 2: Excludes emails with the SENT label (outgoing mail).
         """
+        from sqlalchemy import not_
         stmt = (
             select(Email)
             .where(Email.user_id == user_id)
             .where(Email.is_read.is_(False))
             .where(Email.is_processed.is_(False))
+            # Exclude outgoing: SENT label means the user sent this email
+            .where(
+                not_(Email.labels.contains(["SENT"]))
+            )
             .order_by(Email.received_at.desc())
             .limit(limit)
         )

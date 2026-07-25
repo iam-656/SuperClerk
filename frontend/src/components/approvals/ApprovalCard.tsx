@@ -2,11 +2,12 @@
 
 // ─────────────────────────────────────────────────────────────
 // SuperClerk — Approval Card Component
-// Fix 5: Reject (and Approve) now persists to backend DB.
+// Fix 4: "Approve & Send" now actually sends the reply via Gmail.
+// Fix 8: Shows original email body in a collapsible accordion.
 // ─────────────────────────────────────────────────────────────
 
 import { useState } from "react";
-import { Check, Pencil, X, ChevronDown, ChevronUp, Lightbulb, RefreshCw } from "lucide-react";
+import { Check, Pencil, X, ChevronDown, ChevronUp, Lightbulb, RefreshCw, Mail } from "lucide-react";
 import type { Approval, Priority } from "@/types";
 import { formatRelativeTime, getInitials } from "@/lib/utils";
 
@@ -23,6 +24,7 @@ interface ApprovalCardProps {
 
 export function ApprovalCard({ approval, index }: ApprovalCardProps) {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [isOriginalExpanded, setIsOriginalExpanded] = useState(false); // Fix 8
   const [actionTaken, setActionTaken] = useState<"approved" | "rejected" | null>(null);
   const [isActioning, setIsActioning] = useState(false);
   const [editMode, setEditMode] = useState(false);
@@ -35,12 +37,66 @@ export function ApprovalCard({ approval, index }: ApprovalCardProps) {
   const initials = getInitials(approval.sender);
   const delayClass = `delay-${(index + 1) * 200}`;
 
-  // ─── Persist decision to backend ─────────────────────────
-  const persistDecision = async (
-    newStatus: "approved" | "rejected"
-  ): Promise<boolean> => {
+  // ─── Fix 4: Actually send the reply, then persist decision ──
+  const handleApprove = async () => {
+    setIsActioning(true);
+    setActionError(null);
     const token = sessionStorage.getItem("sc_access_token");
-    if (!token) return false;
+    if (!token) {
+      setActionError("Not authenticated.");
+      setIsActioning(false);
+      return;
+    }
+
+    try {
+      // Step 1: Send the email via Gmail API
+      const sendRes = await fetch(
+        `${backendUrl}/api/v1/analysis/reply/${approval.emailId}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ reply_body: editedReply }),
+        }
+      );
+
+      if (!sendRes.ok) {
+        const err = await sendRes.json().catch(() => ({}));
+        throw new Error(err.detail ?? `Failed to send reply (${sendRes.status})`);
+      }
+
+      // Step 2: Persist "approved" status to DB
+      await fetch(
+        `${backendUrl}/api/v1/analysis/status/${approval.emailId}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ approval_status: "approved" }),
+        }
+      );
+
+      setActionTaken("approved");
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Failed to send reply.");
+    } finally {
+      setIsActioning(false);
+    }
+  };
+
+  const handleReject = async () => {
+    setIsActioning(true);
+    setActionError(null);
+    const token = sessionStorage.getItem("sc_access_token");
+    if (!token) {
+      setActionError("Not authenticated.");
+      setIsActioning(false);
+      return;
+    }
     try {
       const res = await fetch(
         `${backendUrl}/api/v1/analysis/status/${approval.emailId}`,
@@ -50,39 +106,16 @@ export function ApprovalCard({ approval, index }: ApprovalCardProps) {
             Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ approval_status: newStatus }),
+          body: JSON.stringify({ approval_status: "rejected" }),
         }
       );
-      return res.ok;
-    } catch {
-      return false;
-    }
-  };
-
-  const handleApprove = async () => {
-    setIsActioning(true);
-    setActionError(null);
-    const ok = await persistDecision("approved");
-    if (!ok) {
-      setActionError("Failed to save decision. Please try again.");
+      if (!res.ok) throw new Error(`Failed to reject (${res.status})`);
+      setActionTaken("rejected");
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : "Failed to reject.");
+    } finally {
       setIsActioning(false);
-      return;
     }
-    setActionTaken("approved");
-    setIsActioning(false);
-  };
-
-  const handleReject = async () => {
-    setIsActioning(true);
-    setActionError(null);
-    const ok = await persistDecision("rejected");
-    if (!ok) {
-      setActionError("Failed to save decision. Please try again.");
-      setIsActioning(false);
-      return;
-    }
-    setActionTaken("rejected");
-    setIsActioning(false);
   };
 
   if (actionTaken) {
@@ -105,7 +138,7 @@ export function ApprovalCard({ approval, index }: ApprovalCardProps) {
             style={{ color: actionTaken === "approved" ? "#059669" : "#DC2626" }}
           >
             {actionTaken === "approved"
-              ? `Reply approved and sent to ${approval.sender}`
+              ? `Reply sent to ${approval.sender} ✓`
               : `Reply rejected — email marked for manual review`}
           </p>
         </div>
@@ -158,6 +191,46 @@ export function ApprovalCard({ approval, index }: ApprovalCardProps) {
           </div>
         </div>
       </div>
+
+      {/* Fix 8: Original Email Accordion */}
+      {approval.originalBody && (
+        <div style={{ borderTop: "1px solid var(--color-border)" }}>
+          <button
+            id={`btn-toggle-original-${approval.id}`}
+            onClick={() => setIsOriginalExpanded(!isOriginalExpanded)}
+            className="w-full flex items-center justify-between px-5 py-3 text-left"
+            style={{ background: "var(--color-surface)" }}
+            aria-expanded={isOriginalExpanded}
+          >
+            <div className="flex items-center gap-2">
+              <Mail size={13} style={{ color: "var(--color-text-muted)" }} />
+              <span className="text-xs font-semibold uppercase tracking-wider" style={{ color: "var(--color-text-muted)" }}>
+                Original Email
+              </span>
+            </div>
+            {isOriginalExpanded ? (
+              <ChevronUp size={14} style={{ color: "var(--color-text-muted)" }} />
+            ) : (
+              <ChevronDown size={14} style={{ color: "var(--color-text-muted)" }} />
+            )}
+          </button>
+
+          {isOriginalExpanded && (
+            <div className="px-5 pb-4">
+              <pre
+                className="text-xs leading-relaxed whitespace-pre-wrap font-sans rounded-xl p-4 max-h-48 overflow-y-auto"
+                style={{
+                  background: "var(--color-bg)",
+                  border: "1px solid var(--color-border)",
+                  color: "var(--color-text-muted)",
+                }}
+              >
+                {approval.originalBody}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Draft Reply — Collapsible */}
       <div style={{ borderTop: "1px solid var(--color-border)" }}>
@@ -224,7 +297,7 @@ export function ApprovalCard({ approval, index }: ApprovalCardProps) {
           onClick={handleApprove}
           disabled={isActioning}
           className="btn btn-success flex-1 gap-2"
-          aria-label={`Approve draft reply to ${approval.sender}`}
+          aria-label={`Approve and send draft reply to ${approval.sender}`}
         >
           {isActioning ? <RefreshCw size={14} className="animate-spin" /> : <Check size={16} />}
           Approve &amp; Send

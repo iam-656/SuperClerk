@@ -1,5 +1,5 @@
 @import "tailwindcss";
-@plugin "@tailwindcss/typography";
+
 @layer base {
   :root {
     /* Brand Colors */
@@ -296,8 +296,47 @@
   }
 
   /* Stagger delays */
-  .delay-100 { animation-delay: 0.1s; }
   .delay-200 { animation-delay: 0.2s; }
   .delay-300 { animation-delay: 0.3s; }
   .delay-400 { animation-delay: 0.4s; }
+
+  /* ── Email Body Typography ───────────────────── */
+  .email-content {
+    color: var(--color-text);
+    font-size: 0.875rem;
+    line-height: 1.6;
+  }
+  .email-content a {
+    color: var(--color-primary);
+    text-decoration: underline;
+  }
+  .email-content h1, .email-content h2, .email-content h3, .email-content h4 {
+    font-weight: 600;
+    margin-top: 1.5em;
+    margin-bottom: 0.5em;
+  }
+  .email-content h1 { font-size: 1.5rem; }
+  .email-content h2 { font-size: 1.25rem; }
+  .email-content p {
+    margin-top: 1em;
+    margin-bottom: 1em;
+  }
+  .email-content ul {
+    list-style-type: disc;
+    padding-left: 1.5em;
+    margin-top: 1em;
+    margin-bottom: 1em;
+  }
+  .email-content ol {
+    list-style-type: decimal;
+    padding-left: 1.5em;
+    margin-top: 1em;
+    margin-bottom: 1em;
+  }
+  .email-content blockquote {
+    border-left: 3px solid var(--color-border);
+    padding-left: 1em;
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
 }

@@ -49,6 +49,7 @@ export interface Approval {
   status: ApprovalStatus;
   createdAt: string;
   priority: Priority;
+  originalBody?: string; // Fix 8: original email body for preview accordion
 }
 
 // ── Timeline ─────────────────────────────────────────────────

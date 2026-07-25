@@ -72,8 +72,9 @@ async def pubsub_pull_worker() -> None:
             for received_msg in response.received_messages:
                 try:
                     # Decode the Pub/Sub message payload
+                    # Note: Pull subscriptions automatically base64-decode message.data
                     data = json.loads(
-                        base64.b64decode(received_msg.message.data).decode("utf-8")
+                        received_msg.message.data.decode("utf-8")
                     )
                     email_address = data.get("emailAddress")
 
@@ -134,8 +135,24 @@ async def _sync_user_by_email(email_address: str) -> None:
             logger.info(
                 "Pub/Sub sync complete: email=%s result=%s", email_address, result
             )
+            
+            # Auto-analyze if new emails were inserted
+            if result.get("inserted", 0) > 0:
+                asyncio.create_task(_run_analysis_in_background(user.id))
+                
         except Exception as exc:
             await session.rollback()
             logger.error(
                 "Pub/Sub sync failed for email=%s: %s", email_address, exc, exc_info=True
             )
+
+async def _run_analysis_in_background(user_id) -> None:
+    """Helper to run AI analysis in the background with a fresh DB session."""
+    from app.services.ai_service import analyze_unread_emails
+    
+    async with AsyncSessionLocal() as session:
+        try:
+            logger.info("Pub/Sub auto-analyzing new emails for user=%s", user_id)
+            await analyze_unread_emails(session, user_id)
+        except Exception as exc:
+            logger.error("Pub/Sub auto-analysis failed for user=%s: %s", user_id, exc)

@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.repositories.connected_account_repo import ConnectedAccountRepository
 from app.repositories.email_repo import EmailRepository
+from app.models.email import Email as EmailModel
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -272,7 +273,7 @@ async def incremental_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
             lambda: gmail.users().history().list(
                 userId="me",
                 startHistoryId=account.last_history_id,
-                historyTypes=["messageAdded"],
+                historyTypes=["messageAdded", "messageDeleted", "labelAdded"],
             ).execute()
         )
     except Exception as exc:
@@ -296,20 +297,85 @@ async def incremental_sync(session: AsyncSession, user_id: uuid.UUID) -> dict:
     inserted, skipped = await email_repo.bulk_upsert_emails(user_id, emails_data)
     await session.commit()
 
+    # Fix 6: Sync deletions — remove trashed/deleted messages from our DB
+    deleted_count = await _sync_deletions(session, user_id, history, gmail)
+    if deleted_count > 0:
+        await session.commit()
+
     # Update historyId cursor
     await ca_repo.update_history_id(account.id, new_history_id)
     await session.commit()
 
     logger.info(
-        "Incremental sync done: user=%s new_messages=%d inserted=%d skipped=%d",
-        user_id, len(message_ids), inserted, skipped,
+        "Incremental sync done: user=%s new_messages=%d inserted=%d skipped=%d deleted=%d",
+        user_id, len(message_ids), inserted, skipped, deleted_count,
     )
     return {
         "inserted": inserted,
         "skipped": skipped,
         "new_messages_found": len(message_ids),
+        "deleted": deleted_count,
         "history_id": new_history_id,
     }
+
+
+# ─── Fix 6: Deletion Sync ────────────────────────────────────
+
+async def _sync_deletions(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    history: list[dict],
+    gmail,
+) -> int:
+    """
+    Inspect Gmail history for deleted/trashed messages and remove them from DB.
+    Returns the number of emails deleted.
+    Cascading deletes on Email → EmailSummary and Reminder are handled by SQLAlchemy.
+    """
+    from sqlalchemy import select, delete
+
+    deleted_gmail_ids: set[str] = set()
+
+    # Collect message IDs that were deleted or moved to trash
+    for record in history:
+        # Explicit deletes
+        for msg_deleted in record.get("messagesDeleted", []):
+            deleted_gmail_ids.add(msg_deleted["message"]["id"])
+        # Label changes: if TRASH or SPAM was added, treat as deleted
+        for label_change in record.get("labelAdded", []):
+            labels_added = label_change.get("labelIds", [])
+            if "TRASH" in labels_added or "SPAM" in labels_added:
+                deleted_gmail_ids.add(label_change["message"]["id"])
+
+    if not deleted_gmail_ids:
+        return 0
+
+    logger.info(
+        "Deletion sync: user=%s found %d messages to delete",
+        user_id, len(deleted_gmail_ids),
+    )
+
+    # Look up our DB rows for those Gmail IDs
+    stmt = (
+        select(EmailModel)
+        .where(EmailModel.user_id == user_id)
+        .where(EmailModel.gmail_id.in_(deleted_gmail_ids))
+    )
+    result = await session.execute(stmt)
+    emails_to_delete = result.scalars().all()
+
+    if not emails_to_delete:
+        return 0
+
+    for email in emails_to_delete:
+        await session.delete(email)  # cascade deletes EmailSummary + Reminder
+
+    await session.flush()
+    logger.info(
+        "Deletion sync complete: user=%s deleted %d emails from DB",
+        user_id, len(emails_to_delete),
+    )
+    return len(emails_to_delete)
 
 
 # ─── Gmail Watch (Pub/Sub) ───────────────────────────────────

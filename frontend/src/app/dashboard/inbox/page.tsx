@@ -11,6 +11,8 @@
 // ─────────────────────────────────────────────────────────────
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { mutate as swrMutate } from "swr";
+import { useBadgeCountContext } from "@/components/providers/BadgeCountProvider";
 import {
   RefreshCw,
   Mail,
@@ -25,6 +27,8 @@ import {
   ChevronDown,
   ChevronUp,
   ArrowLeft,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 
 // ─── Types ───────────────────────────────────────────────────
@@ -32,6 +36,7 @@ import {
 interface Email {
   id: string;
   gmail_id: string;
+  thread_id: string | null;
   sender: string;
   sender_name: string | null;
   subject: string;
@@ -48,7 +53,7 @@ interface Suggestion {
   subject: string;
   sender: string;
   summary: string;
-  action: "reply" | "reminder";
+  action: "reply" | "reminder" | "none";
   reply_draft: string | null;
   reminder_reason: string | null;
   priority: number;
@@ -110,9 +115,187 @@ function priorityLabel(p: number): { label: string; color: string; bg: string } 
   return { label: "Low", color: "#6B7280", bg: "#F9FAFB" };
 }
 
+// ─── Fix 7: Thread grouping helper ──────────────────────────
+interface Thread {
+  threadId: string | null;
+  emails: Email[]; // newest first
+}
+
+function groupByThread(emails: Email[]): Thread[] {
+  const map = new Map<string, Email[]>();
+  for (const email of emails) {
+    const key = email.thread_id ?? email.id; // emails without thread_id treated as own thread
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(email);
+  }
+  // Sort each thread by date desc, then sort threads by their newest message
+  const threads: Thread[] = [];
+  for (const [threadId, msgs] of map) {
+    const sorted = [...msgs].sort(
+      (a, b) => new Date(b.received_at).getTime() - new Date(a.received_at).getTime()
+    );
+    threads.push({ threadId, emails: sorted });
+  }
+  threads.sort(
+    (a, b) =>
+      new Date(b.emails[0].received_at).getTime() -
+      new Date(a.emails[0].received_at).getTime()
+  );
+  return threads;
+}
+
+// ─── Fix 7: ThreadRow sub-component (useState must be at top level) ──
+
+interface ThreadRowProps {
+  thread: Thread;
+  selectedId: string | null;
+  suggestions: Record<string, Suggestion>;
+  isRead: (email: Email) => boolean;
+  selectEmail: (id: string) => void;
+}
+
+function ThreadRow({ thread, selectedId, suggestions, isRead, selectEmail }: ThreadRowProps) {
+  const [expanded, setExpanded] = useState(false);
+  const { emails: threadEmails } = thread;
+  const rootEmail = threadEmails[0];
+  const hasReplies = threadEmails.length > 1;
+  const hasSuggestion = threadEmails.some((e) => !!suggestions[e.id]);
+  const isAnyUnread = threadEmails.some((e) => !isRead(e));
+  const isThreadSelected = threadEmails.some((e) => e.id === selectedId);
+
+  return (
+    <div>
+      {/* Root / newest message */}
+      <button
+        onClick={() => selectEmail(rootEmail.id)}
+        className="w-full text-left px-4 py-3.5 transition-colors hover:bg-[var(--color-surface)] focus:outline-none"
+        style={{
+          background: selectedId === rootEmail.id ? "var(--color-surface)" : "transparent",
+          borderLeft: isThreadSelected ? "3px solid var(--color-primary)" : "3px solid transparent",
+        }}
+      >
+        <div className="flex items-start gap-3">
+          <div
+            className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5 relative"
+            style={{ background: `hsl(${(rootEmail.sender.charCodeAt(0) * 37) % 360}, 60%, 55%)` }}
+          >
+            {getSenderInitials(rootEmail.sender_name, rootEmail.sender)}
+            {hasSuggestion && (
+              <span
+                className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white flex items-center justify-center"
+                style={{ background: "var(--color-primary)" }}
+                title="AI suggestion available"
+              >
+                <Sparkles size={6} className="text-white" />
+              </span>
+            )}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2 mb-0.5">
+              <p
+                className="text-sm truncate"
+                style={{ color: "var(--color-text)", fontWeight: !isRead(rootEmail) ? 600 : 400 }}
+              >
+                {rootEmail.sender_name ?? rootEmail.sender}
+                {hasReplies && (
+                  <span
+                    className="ml-2 text-xs px-1.5 py-0.5 rounded-full font-medium"
+                    style={{
+                      background: "var(--color-surface)",
+                      color: "var(--color-text-muted)",
+                      border: "1px solid var(--color-border)",
+                    }}
+                  >
+                    {threadEmails.length}
+                  </span>
+                )}
+              </p>
+              <span className="text-xs flex-shrink-0" style={{ color: "var(--color-text-muted)" }}>
+                {formatRelativeTime(rootEmail.received_at)}
+              </span>
+            </div>
+            <p
+              className="text-xs mb-1 truncate"
+              style={{ color: "var(--color-text)", fontWeight: !isRead(rootEmail) ? 500 : 400 }}
+            >
+              {rootEmail.subject}
+            </p>
+            <p className="text-xs truncate" style={{ color: "var(--color-text-muted)" }}>
+              {rootEmail.snippet ?? ""}
+            </p>
+          </div>
+          {!isRead(rootEmail) && (
+            <div className="w-2 h-2 rounded-full flex-shrink-0 mt-2" style={{ background: "var(--color-primary)" }} />
+          )}
+        </div>
+      </button>
+
+      {/* Nested replies */}
+      {hasReplies && (
+        <div className="ml-10 border-l" style={{ borderColor: "var(--color-border)" }}>
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            className="w-full flex items-center gap-1.5 px-3 py-1 text-left"
+            style={{ color: "var(--color-text-muted)" }}
+          >
+            {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            <span className="text-xs">
+              {expanded ? "Hide" : `${threadEmails.length - 1} more message${threadEmails.length - 1 !== 1 ? "s" : ""}`}
+            </span>
+          </button>
+          {expanded &&
+            threadEmails.slice(1).map((replyEmail) => {
+              const replyRead = isRead(replyEmail);
+              const isSent = replyEmail.labels?.includes("SENT");
+              return (
+                <button
+                  key={replyEmail.id}
+                  onClick={() => selectEmail(replyEmail.id)}
+                  className="w-full text-left px-3 py-2.5 transition-colors hover:bg-[var(--color-surface)] focus:outline-none"
+                  style={{
+                    background: selectedId === replyEmail.id ? "var(--color-surface)" : "transparent",
+                    borderLeft: selectedId === replyEmail.id ? "2px solid var(--color-primary)" : "2px solid transparent",
+                  }}
+                >
+                  <div className="flex items-start gap-2">
+                    <div
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
+                      style={{
+                        background: isSent ? "var(--color-primary)" : `hsl(${(replyEmail.sender.charCodeAt(0) * 37) % 360}, 60%, 55%)`,
+                      }}
+                    >
+                      {getSenderInitials(replyEmail.sender_name, replyEmail.sender)}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1">
+                        <p
+                          className="text-xs truncate"
+                          style={{ color: "var(--color-text)", fontWeight: replyRead ? 400 : 600 }}
+                        >
+                          {isSent ? "You" : (replyEmail.sender_name ?? replyEmail.sender)}
+                        </p>
+                        <span className="text-xs flex-shrink-0" style={{ color: "var(--color-text-muted)" }}>
+                          {formatRelativeTime(replyEmail.received_at)}
+                        </span>
+                      </div>
+                      <p className="text-xs truncate" style={{ color: "var(--color-text-muted)" }}>
+                        {replyEmail.snippet ?? ""}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────
 
 export default function InboxPage() {
+  const { decrementInbox } = useBadgeCountContext();
   // ── Initialise from cache so tab-switch is instant ──────────
   const [emails, setEmails] = useState<Email[]>(_cache.emails);
   const [suggestions, setSuggestions] = useState<Record<string, Suggestion>>(
@@ -132,7 +315,7 @@ export default function InboxPage() {
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Per-email analysis state
+  const [listCollapsed, setListCollapsed] = useState(false);
   const [analysingEmailId, setAnalysingEmailId] = useState<string | null>(null);
 
   // Reply modal state
@@ -212,6 +395,10 @@ export default function InboxPage() {
   const markAsRead = useCallback(
     async (emailId: string) => {
       // 1. Optimistic UI update — instant, no loading
+      const wasUnread =
+        !_cache.emails.find((e) => e.id === emailId)?.is_read &&
+        !_cache.readIds.has(emailId);
+
       setLocalReadIds((prev) => {
         const next = new Set(prev);
         next.add(emailId);
@@ -224,6 +411,27 @@ export default function InboxPage() {
           e.id === emailId ? { ...e, is_read: true } : e
         )
       );
+      // 1b. Immediately drop the sidebar badge — no poll wait
+      if (wasUnread) {
+        decrementInbox();
+        // Also decrement the dashboard SWR cache so the widget
+        // updates instantly without waiting for the 60s poll.
+        swrMutate(
+          "dashboard",
+          (prev: { stats: { unreadEmails: number }; suggestions: unknown[] } | undefined) =>
+            prev
+              ? {
+                  ...prev,
+                  stats: {
+                    ...prev.stats,
+                    unreadEmails: Math.max(0, prev.stats.unreadEmails - 1),
+                  },
+                }
+              : prev,
+          { revalidate: false }
+        );
+      }
+
       // 2. Persist to backend silently
       const token = sessionStorage.getItem("sc_access_token");
       if (!token) return;
@@ -236,16 +444,24 @@ export default function InboxPage() {
         // non-fatal — the UI is already updated
       }
     },
-    [backendUrl, updateEmails]
+    [backendUrl, updateEmails, decrementInbox]
   );
 
   // ─── Select email ──────────────────────────────────────────
   const selectEmail = useCallback(
-    (emailId: string) => {
+    (emailId: string | null) => {
       setSelectedId(emailId);
       setReplyOpen(false);
       setReminderOpen(false);
       setShowSuggestion(true);
+      // Aggressively clear state to prevent leakage between emails
+      setReplyBody("");
+      setReminderDate("");
+      setReminderNote("");
+      setError(null);
+      
+      if (!emailId) return;
+
       // Mark as read if not already
       const email = _cache.emails.find((e) => e.id === emailId);
       if (email && !email.is_read && !_cache.readIds.has(emailId)) {
@@ -352,10 +568,20 @@ export default function InboxPage() {
           throw new Error(errBody.detail ?? `Analysis failed (HTTP ${res.status})`);
         }
         const data = await res.json();
-        const map = { ..._cache.suggestions, [emailId]: data.result };
+        const result = data.result;
+        // Fix 9: Push into cache immediately so Approvals tab gets it on next load
+        const map = { ..._cache.suggestions, [emailId]: result };
         updateSuggestions(map);
-        setSuccessMsg("✨ Email analysed!");
-        setTimeout(() => setSuccessMsg(null), 3000);
+        // Fix 9: Show contextual success message with link to Approvals
+        const action = result?.action;
+        if (action === "reply") {
+          setSuccessMsg("✨ Draft ready → go to Approvals tab to send it");
+        } else if (action === "reminder") {
+          setSuccessMsg("⏰ Reminder auto-saved → check Reminders tab");
+        } else {
+          setSuccessMsg("✨ Email analysed — no action needed.");
+        }
+        setTimeout(() => setSuccessMsg(null), 5000);
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "Analysis failed");
       } finally {
@@ -398,26 +624,49 @@ export default function InboxPage() {
     }
   }, [backendUrl, selectedId, replyBody]);
 
-  // ─── Save reminder locally ─────────────────────────────────
+  // ─── Save reminder to backend ──────────────────────────────
   const selectedEmail = emails.find((e) => e.id === selectedId);
 
-  const saveReminder = useCallback(() => {
+  const saveReminder = useCallback(async () => {
     if (!selectedId || !reminderDate) return;
-    const reminders = JSON.parse(localStorage.getItem("sc_reminders") ?? "[]");
-    reminders.push({
-      email_id: selectedId,
-      subject: selectedEmail?.subject ?? "",
-      date: reminderDate,
-      note: reminderNote,
-      created_at: new Date().toISOString(),
-    });
-    localStorage.setItem("sc_reminders", JSON.stringify(reminders));
-    setReminderOpen(false);
-    setReminderDate("");
-    setReminderNote("");
-    setSuccessMsg("⏰ Reminder saved!");
-    setTimeout(() => setSuccessMsg(null), 3000);
-  }, [selectedId, reminderDate, reminderNote, selectedEmail]);
+
+    // Frontend validation: remind_at must be strictly in the future
+    if (new Date(reminderDate).getTime() <= Date.now()) {
+      setError("Reminder time must be in the future.");
+      return;
+    }
+
+    const token = sessionStorage.getItem("sc_access_token");
+    if (!token) return;
+
+    try {
+      const res = await fetch(`${backendUrl}/api/v1/reminders`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email_id: selectedId,
+          remind_at: new Date(reminderDate).toISOString(),
+          note: reminderNote,
+        }),
+      });
+
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.detail ?? "Failed to save reminder");
+      }
+
+      setReminderOpen(false);
+      setReminderDate("");
+      setReminderNote("");
+      setSuccessMsg("⏰ Reminder saved!");
+      setTimeout(() => setSuccessMsg(null), 3000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to save reminder");
+    }
+  }, [backendUrl, selectedId, reminderDate, reminderNote]);
 
   // ─── Mount ─────────────────────────────────────────────────
   useEffect(() => {
@@ -432,9 +681,21 @@ export default function InboxPage() {
   }, [fetchEmails, fetchSuggestions]);
 
   useEffect(() => {
-    const interval = setInterval(() => triggerSync(true), 15 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [triggerSync]);
+    // Check local database for new emails and AI suggestions frequently.
+    // (Actual Gmail API fetching happens in the background via Google Pub/Sub Push)
+    const dbPollInterval = setInterval(() => {
+      fetchEmails(true);
+      fetchSuggestions();
+    }, 10 * 1000); // 10 seconds
+
+    // Keep the backup 15-minute Gmail API sync just in case push notifications fail
+    const syncInterval = setInterval(() => triggerSync(true), 15 * 60 * 1000);
+    
+    return () => {
+      clearInterval(dbPollInterval);
+      clearInterval(syncInterval);
+    };
+  }, [fetchEmails, fetchSuggestions, triggerSync]);
 
   // Pre-fill reply modal with AI draft
   useEffect(() => {
@@ -468,8 +729,12 @@ export default function InboxPage() {
 
       {/* ── Left panel: email list ─────────────────────────── */}
       <div
-        className="flex flex-col w-[420px] flex-shrink-0 border-r h-full"
-        style={{ borderColor: "var(--color-border)" }}
+        className="flex flex-col flex-shrink-0 border-r h-full transition-all duration-300 overflow-hidden"
+        style={{
+          borderColor: "var(--color-border)",
+          width: listCollapsed ? "0px" : "420px",
+          minWidth: listCollapsed ? "0px" : undefined,
+        }}
       >
         {/* Header */}
         <div
@@ -503,6 +768,15 @@ export default function InboxPage() {
                 {formatRelativeTime(lastSynced.toISOString())}
               </span>
             )}
+          <button
+              id="btn-collapse-list"
+              onClick={() => setListCollapsed((v) => !v)}
+              className="btn btn-secondary text-xs py-1.5 px-2 gap-1"
+              aria-label={listCollapsed ? "Show email list" : "Hide email list"}
+              title={listCollapsed ? "Show email list" : "Hide email list"}
+            >
+              <PanelLeftClose size={14} />
+            </button>
             <button
               id="btn-analyze-inbox"
               onClick={analyzeInbox}
@@ -589,89 +863,40 @@ export default function InboxPage() {
               </p>
             </div>
           ) : (
+            // ─── Fix 7: Threaded email list ─────────────────
             <div className="divide-y" style={{ borderColor: "var(--color-border)" }}>
-              {emails.map((email) => {
-                const hasSuggestion = !!suggestions[email.id];
-                const read = isRead(email);
-                return (
-                  <button
-                    key={email.id}
-                    onClick={() => selectEmail(email.id)}
-                    className="w-full text-left px-4 py-3.5 transition-colors hover:bg-[var(--color-surface)] focus:outline-none"
-                    style={{
-                      background: selectedId === email.id ? "var(--color-surface)" : "transparent",
-                      borderLeft:
-                        selectedId === email.id
-                          ? "3px solid var(--color-primary)"
-                          : "3px solid transparent",
-                    }}
-                  >
-                    <div className="flex items-start gap-3">
-                      {/* Avatar */}
-                      <div
-                        className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0 mt-0.5 relative"
-                        style={{
-                          background: `hsl(${(email.sender.charCodeAt(0) * 37) % 360}, 60%, 55%)`,
-                        }}
-                      >
-                        {getSenderInitials(email.sender_name, email.sender)}
-                        {/* AI badge dot */}
-                        {hasSuggestion && (
-                          <span
-                            className="absolute -top-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-white flex items-center justify-center"
-                            style={{ background: "var(--color-primary)" }}
-                            title="AI suggestion available"
-                          >
-                            <Sparkles size={6} className="text-white" />
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-2 mb-0.5">
-                          <p
-                            className="text-sm truncate"
-                            style={{
-                              color: "var(--color-text)",
-                              // Fix 1: use local read state for bold
-                              fontWeight: read ? 400 : 600,
-                            }}
-                          >
-                            {email.sender_name ?? email.sender}
-                          </p>
-                          <span className="text-xs flex-shrink-0" style={{ color: "var(--color-text-muted)" }}>
-                            {formatRelativeTime(email.received_at)}
-                          </span>
-                        </div>
-                        <p
-                          className="text-xs mb-1 truncate"
-                          style={{
-                            color: "var(--color-text)",
-                            fontWeight: read ? 400 : 500,
-                          }}
-                        >
-                          {email.subject}
-                        </p>
-                        <p className="text-xs truncate" style={{ color: "var(--color-text-muted)" }}>
-                          {email.snippet ?? ""}
-                        </p>
-                      </div>
-
-                      {/* Unread dot — disappears immediately on click */}
-                      {!read && (
-                        <div
-                          className="w-2 h-2 rounded-full flex-shrink-0 mt-2"
-                          style={{ background: "var(--color-primary)" }}
-                        />
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+              {groupByThread(emails).map((thread) => (
+                <ThreadRow
+                  key={thread.threadId ?? thread.emails[0].id}
+                  thread={thread}
+                  selectedId={selectedId}
+                  suggestions={suggestions}
+                  isRead={isRead}
+                  selectEmail={selectEmail}
+                />
+              ))}
             </div>
           )}
         </div>
       </div>
+
+      {/* ── List collapsed: expand button ────────────────────── */}
+      {listCollapsed && (
+        <div
+          className="flex flex-col items-center justify-start pt-4 flex-shrink-0 border-r"
+          style={{ borderColor: "var(--color-border)", width: "40px" }}
+        >
+          <button
+            onClick={() => setListCollapsed(false)}
+            className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors hover:bg-[var(--color-surface)]"
+            style={{ color: "var(--color-text-muted)" }}
+            title="Show email list"
+            aria-label="Show email list"
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        </div>
+      )}
 
       {/* ── Right panel: email detail ───────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -707,7 +932,7 @@ export default function InboxPage() {
               {/* Close / Back button */}
               <button
                 id="btn-close-email"
-                onClick={() => setSelectedId(null)}
+                onClick={() => selectEmail(null)}
                 className="btn btn-secondary text-xs py-1.5 px-3 gap-1.5 flex-shrink-0 mt-1"
                 aria-label="Close email and return to inbox list"
                 title="Close"
@@ -993,7 +1218,10 @@ export default function InboxPage() {
                 <input
                   type="datetime-local"
                   value={reminderDate}
-                  onChange={(e) => setReminderDate(e.target.value)}
+                  onChange={(e) => {
+                    setReminderDate(e.target.value);
+                    setError(null);
+                  }}
                   className="w-full rounded-xl px-4 py-2.5 text-sm border outline-none focus:border-[var(--color-primary)]"
                   style={{
                     background: "var(--color-surface)",
@@ -1020,6 +1248,17 @@ export default function InboxPage() {
                   placeholder="What should you do when reminded?"
                 />
               </div>
+              
+              {/* Reminder Error Banner */}
+              {error && (
+                <div
+                  className="px-3 py-2 rounded-lg text-xs flex items-center gap-2"
+                  style={{ background: "#FEF2F2", border: "1px solid #FECACA", color: "#DC2626" }}
+                >
+                  <AlertCircle size={13} />
+                  {error}
+                </div>
+              )}
             </div>
 
             <div
@@ -1031,8 +1270,8 @@ export default function InboxPage() {
               </button>
               <button
                 onClick={saveReminder}
-                disabled={!reminderDate}
-                className="btn btn-primary text-sm gap-2"
+                disabled={!reminderDate || new Date(reminderDate).getTime() <= Date.now()}
+                className="btn btn-primary text-sm gap-2 disabled:opacity-50"
               >
                 <Bell size={14} />
                 Save Reminder

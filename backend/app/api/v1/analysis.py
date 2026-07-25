@@ -175,7 +175,7 @@ async def update_approval_status(
     """Saves the user's approve/reject decision to the database."""
     # Verify email belongs to user
     email_repo = EmailRepository(db)
-    email = await email_repo.get(email_id)
+    email = await email_repo.get_by_id(email_id)
     if not email or email.user_id != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found.")
 

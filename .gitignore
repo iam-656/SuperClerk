@@ -60,6 +60,12 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 prompt.md
+.prompts/
+.implementation_plan/
+implementation_plan/
+prompts/
+docs/
+architectures/
 
 # ============================================================
 # Databases

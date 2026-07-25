@@ -2,62 +2,60 @@
 
 // ─────────────────────────────────────────────────────────────
 // SuperClerk — Approvals Center Page
+// Uses SWR for stale-while-revalidate caching:
+//  • Shows cached approvals instantly on tab-switch
+//  • Background-revalidates every 10s
+//  • Optimistic removal on Approve/Reject
 // ─────────────────────────────────────────────────────────────
 
-import { useState, useEffect, useCallback } from "react";
+import useSWR from "swr";
 import { ShieldCheck, RefreshCw } from "lucide-react";
 import { ApprovalCard } from "@/components/approvals/ApprovalCard";
 import type { Approval } from "@/types";
 
-export default function ApprovalsPage() {
-  const [approvals, setApprovals] = useState<Approval[]>([]);
-  const [loading, setLoading] = useState(true);
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
-  const fetchApprovals = useCallback(async () => {
-    setLoading(true);
-    const token = sessionStorage.getItem("sc_access_token");
-    if (!token) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
-      const res = await fetch(`${backendUrl}/api/v1/analysis/suggestions`, {
-        headers: { Authorization: `Bearer ${token}` },
+async function fetchApprovals(): Promise<Approval[]> {
+  const token = sessionStorage.getItem("sc_access_token");
+  if (!token) return [];
+  const res = await fetch(`${BACKEND_URL}/api/v1/analysis/suggestions`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch approvals");
+  const data = await res.json();
+
+  const loaded: Approval[] = [];
+  for (const s of data.results ?? []) {
+    if (s.action === "reply" && s.approval_status !== "rejected") {
+      loaded.push({
+        id: s.email_id,
+        emailId: s.email_id,
+        emailSubject: s.subject,
+        sender: s.sender,
+        senderEmail: s.sender_email || s.sender,
+        receivedAt: s.received_at || new Date().toISOString(),
+        draftReply: s.reply_draft || "",
+        reasoning: s.summary,
+        status: (s.approval_status as "pending" | "approved" | "rejected" | "edited") || "pending",
+        createdAt: s.received_at || new Date().toISOString(),
+        priority: s.priority <= 2 ? "high" : s.priority === 3 ? "medium" : "low",
+        originalBody: s.original_body || "",
       });
-      if (!res.ok) throw new Error("Failed to fetch");
-      const data = await res.json();
-      
-      const loaded: Approval[] = [];
-      for (const s of data.results ?? []) {
-        // Only show pending "reply" suggestions in Approvals
-        if (s.action === "reply" && s.approval_status !== "rejected") {
-          loaded.push({
-            id: s.email_id,
-            emailId: s.email_id,
-            emailSubject: s.subject,
-            sender: s.sender,
-            senderEmail: s.sender_email || s.sender,
-            receivedAt: s.received_at || new Date().toISOString(),
-            draftReply: s.reply_draft || "",
-            reasoning: s.summary,
-            status: (s.approval_status as "pending" | "approved" | "rejected" | "edited") || "pending",
-            createdAt: s.received_at || new Date().toISOString(),
-            priority: s.priority <= 2 ? "high" : s.priority === 3 ? "medium" : "low"
-          });
-        }
-      }
-      setApprovals(loaded);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
     }
-  }, []);
+  }
+  return loaded;
+}
 
-  useEffect(() => {
-    fetchApprovals();
-  }, [fetchApprovals]);
+export default function ApprovalsPage() {
+  const { data: approvals = [], isLoading, mutate } = useSWR<Approval[]>(
+    "approvals",
+    fetchApprovals,
+    {
+      refreshInterval: 10_000,    // background poll every 10s
+      revalidateOnFocus: true,    // refresh when tab regains focus
+      keepPreviousData: true,     // show stale data while revalidating
+    }
+  );
 
   const pendingCount = approvals.filter((a) => a.status === "pending").length;
 
@@ -80,11 +78,11 @@ export default function ApprovalsPage() {
           </div>
           <div className="flex items-center gap-4">
             <button
-              onClick={fetchApprovals}
-              disabled={loading}
+              onClick={() => mutate()}
+              disabled={isLoading}
               className="btn btn-secondary text-sm py-2 px-3 gap-2"
             >
-              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
               Refresh
             </button>
             {pendingCount > 0 && (
@@ -127,7 +125,7 @@ export default function ApprovalsPage() {
       </div>
 
       {/* ── Approval Cards ───────────────────────────── */}
-      {loading ? (
+      {isLoading && approvals.length === 0 ? (
         <div className="flex justify-center py-20">
           <RefreshCw size={32} className="animate-spin" style={{ color: "var(--color-primary)" }} />
         </div>

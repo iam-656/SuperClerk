@@ -13,6 +13,8 @@ from app.repositories.base_repo import BaseRepository
 class UserRepository(BaseRepository[User]):
     model = User
 
+    # get_by_id is inherited from BaseRepository and works correctly.
+
     async def get_by_email(self, email: str) -> User | None:
         """Find a user by their email address."""
         stmt = select(User).where(User.email == email)
